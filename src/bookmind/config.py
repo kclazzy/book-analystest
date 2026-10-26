@@ -13,14 +13,48 @@ ENV_OLLAMA_HOST = "OLLAMA_HOST"
 SETTINGS_FILE = "settings.json"
 
 
-def default_data_dir() -> Path:
-    env = os.environ.get(ENV_DATA_DIR)
-    if env:
-        return Path(env)
+POINTER_FILE = "location.json"
+
+
+def home_dir() -> Path:
+    """Стандартное место приложения; здесь лежит только указатель на выбранную пользователем папку данных."""
     if getattr(sys, "frozen", False):          # установленное приложение: папка Program Files недоступна для записи
         base = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
         return Path(base) / "BookMind"
     return Path.cwd() / "data"
+
+
+def read_pointer(home: Path | None = None) -> Path | None:
+    path = (home or home_dir()) / POINTER_FILE
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8")).get("data_dir")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return Path(raw) if raw else None
+
+
+def write_pointer(target: Path | None, home: Path | None = None) -> None:
+    """target=None возвращает стандартное расположение."""
+    home = home or home_dir()
+    path = home / POINTER_FILE
+    if target is None:
+        path.unlink(missing_ok=True)
+        return
+    home.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"data_dir": str(target)}, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+
+
+def default_data_dir() -> Path:
+    """Порядок: переменная окружения → папка, выбранная пользователем → стандартная."""
+    env = os.environ.get(ENV_DATA_DIR)
+    if env:
+        return Path(env)
+    chosen = read_pointer()
+    if chosen is not None and chosen.is_dir():     # выбранный диск может быть отключён — тогда не создаём пустую базу молча
+        return chosen
+    return home_dir()
 
 
 def _normalize_host(raw: str) -> str:

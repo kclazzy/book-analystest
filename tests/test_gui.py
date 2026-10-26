@@ -253,3 +253,16 @@ def test_apply_update_makes_backup_then_launches(ctx, tmp_path):
     backup = ctx.apply_update(tmp_path / "setup.exe", launch=launched.append)
     assert launched == [tmp_path / "setup.exe"] and backup and backup.exists() and backup.name.startswith("pre-update-")
     assert ctx.backup.verify(backup)["counts"]["books"] == 1
+
+
+def test_gui_change_data_dir_and_reset(ctx, qapp, tmp_path, monkeypatch):
+    from bookmind import config
+    monkeypatch.setattr(config, "home_dir", lambda: tmp_path / "home")
+    monkeypatch.delenv(config.ENV_DATA_DIR, raising=False)
+    win = MainWindow(ctx)
+    assert str(ctx.data_dir) in win.data_label.text()
+    assert win.apply_data_dir(tmp_path / "gui_target")
+    assert "Перезапустите" in win.data_label.text() and config.read_pointer() == tmp_path / "gui_target"
+    win.reset_data_dir()
+    assert config.read_pointer() is None
+    win.close()

@@ -18,6 +18,7 @@ from bookmind.creation.schemas import DIVERGENCE_LABELS, KEEP_KINDS, AdaptParams
 from bookmind.system.environment import OLLAMA_DOWNLOAD_URL, blocking_problems, start_ollama
 from bookmind import __version__
 from bookmind.system.updater import is_frozen
+from bookmind.system import datadir
 from bookmind.workers.threads import (
     AdaptThread, AnalysisThread, AskThread, EnvThread, ModelThread, UpdateCheckThread, UpdateDownloadThread,
 )
@@ -825,8 +826,66 @@ class MainWindow(QMainWindow):
         urow.addStretch()
         bl.addLayout(urow)
         lay.addWidget(box)
+        dbox = QGroupBox("Папка данных (анализ книг, база, экспорт, резервные копии)")
+        dl = QVBoxLayout(dbox)
+        self.data_label = QLabel(str(self.ctx.data_dir))
+        self.data_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.data_label.setWordWrap(True)
+        drow = QHBoxLayout()
+        self.data_change_btn = QPushButton("Изменить папку…")
+        self.data_reset_btn = QPushButton("Вернуть стандартную")
+        self.data_change_btn.clicked.connect(self.choose_data_dir)
+        self.data_reset_btn.clicked.connect(self.reset_data_dir)
+        drow.addWidget(self.data_change_btn)
+        drow.addWidget(self.data_reset_btn)
+        drow.addStretch()
+        dl.addWidget(self.data_label)
+        dl.addLayout(drow)
+        lay.addWidget(dbox)
         self.tabs.addTab(w, "Система")
         self.sys_tab = w
+
+    # ---------- папка данных ----------
+    def choose_data_dir(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Выберите папку для данных", str(self.ctx.data_dir.parent))
+        if not path:
+            return
+        chk = datadir.check_target(self.ctx.data_dir, Path(path))
+        if not chk.ok:
+            QMessageBox.warning(self, "Папка данных", chk.message)
+            return
+        if chk.has_data:
+            text = f"В папке уже есть данные BookMind:\n{path}\n\nИспользовать их? Текущие данные останутся на месте."
+            copy = False
+        else:
+            text = f"Скопировать текущие данные в\n{path}\nи использовать эту папку?\nСтарая папка не будет удалена."
+            copy = True
+        if QMessageBox.question(self, "Папка данных", text) == QMessageBox.Yes:
+            self.apply_data_dir(Path(path), copy=copy)
+
+    def apply_data_dir(self, path: Path, copy: bool = True) -> bool:
+        try:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                datadir.change_data_dir(self.ctx.data_dir, path, copy=copy)
+            finally:
+                QApplication.restoreOverrideCursor()
+        except (BookMindError, OSError) as e:
+            QMessageBox.warning(self, "Папка данных", f"Не удалось сменить папку: {e}")
+            return False
+        self._data_dir_changed(f"Новая папка данных: {path}")
+        return True
+
+    def reset_data_dir(self) -> None:
+        datadir.reset_data_dir()
+        self._data_dir_changed("Будет использована стандартная папка данных.")
+
+    def _data_dir_changed(self, text: str) -> None:
+        self.data_label.setText(f"{self.ctx.data_dir}\n→ {text}\nПерезапустите приложение, чтобы изменение вступило в силу.")
+        box = QMessageBox(QMessageBox.Information, "Папка данных", text + "\n\nПерезапустите приложение, чтобы изменение вступило в силу.", QMessageBox.Ok, self)
+        box.setWindowModality(Qt.NonModal)
+        box.show()
+        self._info_box = box
 
     # ---------- обновление приложения ----------
     def _toggle_auto_update(self, on: bool) -> None:
