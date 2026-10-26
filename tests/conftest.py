@@ -50,3 +50,34 @@ def client(fake):
     c = OllamaClient("http://test", max_retries=2, transport=httpx.MockTransport(fake.handler), sleep=lambda s: None)
     yield c
     c.close()
+
+
+# ---------- общие фикстуры хранилища ----------
+from bookmind.config import Settings  # noqa: E402
+from bookmind.services.library import LibraryService  # noqa: E402
+from bookmind.storage.database import Database  # noqa: E402
+
+
+@pytest.fixture
+def data_dir(tmp_path):
+    d = tmp_path / "data"
+    d.mkdir()
+    return d
+
+
+@pytest.fixture
+def settings():
+    # одна глава эталонного романа должна помещаться в один фрагмент
+    return Settings(chunk_chars_min=1500, chunk_chars_max=3000, max_retries=1)
+
+
+@pytest.fixture
+def db(data_dir):
+    database = Database(data_dir / "database" / "bookmind.sqlite")
+    yield database
+    database.close()
+
+
+@pytest.fixture
+def library(db, settings, data_dir):
+    return LibraryService(db, settings, data_dir)
