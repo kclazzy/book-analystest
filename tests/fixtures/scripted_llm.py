@@ -208,6 +208,9 @@ class ScriptedLLM:
             stage, table = "deep", self.deep
         elif "Верни JSON: summary (3–6 предложений)" in prompt:
             stage, table = "chapter_summary", self.summaries
+        elif "Верни JSON: summary (4–8 предложений" in prompt:
+            stage, table = "arc_summary", {(book, chapter): self.extra.get("arc_default", {
+                "summary": "Развитие арки.", "key_points": ["поворот"], "open_threads": []})}
         elif "Допустимые значения \"relation\"" in prompt:
             stage, table = "contradiction", self.extra.get("contradiction", {})
         elif "Верни JSON: status (open, partial, resolved)" in prompt:
@@ -225,6 +228,8 @@ class ScriptedLLM:
         if stage in ("contradiction", "question_review", "answer"):
             handler = table.get("handler") if isinstance(table, dict) else None
             return json.dumps(handler(prompt) if handler else table.get("default", {}), ensure_ascii=False)
+        if stage == "arc_summary":
+            return json.dumps(next(iter(table.values())), ensure_ascii=False)
         return json.dumps(table.get((book, chapter), {}), ensure_ascii=False)
 
     def count(self, stage: str) -> int:
@@ -236,3 +241,131 @@ class ScriptedLLM:
 
 def unavailable(msg: str = "Ollama недоступен") -> OllamaUnavailableError:
     return OllamaUnavailableError(msg)
+
+
+# ---------------- эталон второго прохода (deep) и сводок ----------------
+def goal(character, description, quote, *, status="active", goal_type="stated", motivation="", origin="", desired_result="",
+         change_note="", allies="", opponents=""):
+    return {"character": character, "description": description, "origin": origin, "motivation": motivation,
+            "desired_result": desired_result, "obstacles": "", "methods": "", "allies": allies, "opponents": opponents,
+            "goal_type": goal_type, "status": status, "change_note": change_note, "quote": quote}
+
+
+def rel(a, b, rel_type, quote, *, state="", change_note="", description=""):
+    return {"a": a, "b": b, "rel_type": rel_type, "state": state, "description": description, "change_note": change_note,
+            "quote": quote}
+
+
+def thread(title, quote, description="", status="open", events=()):
+    return {"title": title, "description": description, "status": status, "events": list(events), "quote": quote}
+
+
+def question(kind, text, quote, *, status="open", clues=(), hypotheses=(), resolution=""):
+    return {"kind": kind, "text": text, "status": status, "clues": list(clues), "hypotheses": list(hypotheses),
+            "resolution": resolution, "quote": quote}
+
+
+def motif(name, kind, quote, description=""):
+    return {"name": name, "kind": kind, "description": description, "quote": quote}
+
+
+def D(goals=(), relationships=(), threads=(), questions=(), motifs=()):
+    return {"goals": list(goals), "relationships": list(relationships), "plot_threads": list(threads),
+            "questions": list(questions), "motifs": list(motifs)}
+
+
+REVENGE = "Найти убийцу Аларика и заставить его заплатить"
+PROTECT = "Защитить сестру Лину"
+KEY_Q = "Какой замок открывает серебряный ключ со знаком пламени?"
+KILLER_Q = "Кто убил Аларика Вейна?"
+DEATH_THREAD = "Расследование смерти Аларика"
+ELDAR_GOAL = "Получить от Миры то, что оставил Аларик"
+TIKHON_GOAL = "Освободить отца из долговой тюрьмы"
+
+DEEP[(B1, "Глава 1. Мёртвая лаборатория")] = D(
+    goals=[goal("Мира Ветрова", REVENGE, "Я найду того, кто это сделал, и заставлю его заплатить",
+                motivation="горе от потери наставника", origin="смерть Аларика", desired_result="убийца наказан")],
+    threads=[thread(DEATH_THREAD, "Это не несчастный случай", "Мира выясняет, кто убил Аларика")],
+    questions=[question("mystery", KILLER_Q, "Это не несчастный случай", clues=["красная полоса на шее"]),
+               question("mystery", KEY_Q, "маленький серебряный ключ с вытравленным знаком пламени",
+                        clues=["на ключе знак пламени"])],
+    motifs=[motif("Пламя", "recurring_motif", "вытравленным знаком пламени", "знак пламени на ключе")],
+)
+DEEP[(B1, "Глава 2. Сестра")] = D(
+    goals=[goal("Мира Ветрова", PROTECT, "Ради неё Мира была готова на многое", goal_type="demonstrated",
+                motivation="Лина — единственный близкий человек")],
+    relationships=[rel("Мира Ветрова", "Лина", "сестра", "Лина была единственным близким человеком", state="близкие")],
+    questions=[question("prophecy", "Когда огонь на башне погаснет, ключ найдёт свой замок",
+                        "Когда огонь на башне погаснет, ключ найдёт свой замок")],
+)
+DEEP[(B1, "Глава 3. Гильдия")] = D(
+    goals=[goal("Эльдар Корн", ELDAR_GOAL, "Он не передавал вам ничего перед смертью", goal_type="demonstrated")],
+    relationships=[rel("Мира Ветрова", "Эльдар Корн", "недоверие", "Недоверие к Эльдару Корну поселилось в ней, как заноза",
+                       state="настороженность")],
+    threads=[thread(DEATH_THREAD, "Мира впервые подумала, что убийца мог быть среди тех, кто носил гильдейский знак")],
+    questions=[question("mystery", "Знал ли Эльдар об убийстве заранее?", "Он вёл себя так, словно уже знал ответ")],
+)
+DEEP[(B1, "Глава 4. Тихон")] = D(
+    goals=[goal("Тихон Бреве", "Помочь Мире разобраться с ключом", "Я с тобой до конца")],
+    relationships=[rel("Мира Ветрова", "Тихон Бреве", "друг", "Они знали друг друга с детства и никогда не лгали друг другу",
+                       state="доверие")],
+    questions=[question("mystery", KEY_Q, "встречался только на старой Западной башне",
+                        clues=["знак пламени встречается на Западной башне"])],
+)
+DEEP[(B1, "Глава 5. Десять лет назад")] = D(
+    goals=[goal("Аларик Вейн", "Взять Миру в ученицы", "Эта девочка будет моей ученицей", status="achieved")],
+    relationships=[rel("Аларик Вейн", "Эльдар Корн", "соратник", "основали Гильдию вместе", state="дружба с трещиной"),
+                   rel("Аларик Вейн", "Мира Ветрова", "наставник", "Эта девочка будет моей ученицей", state="опека")],
+    questions=[question("secret", "Что такое Огненный реестр и почему из-за него спорили Аларик и Эльдар?",
+                        "спорили из-за какого-то Огненного реестра")],
+)
+DEEP[(B1, "Глава 6. Предательство")] = D(
+    goals=[goal("Тихон Бреве", TIKHON_GOAL, "Твой отец скоро выйдет из долговой тюрьмы", goal_type="demonstrated",
+                motivation="отец в долговой тюрьме")],
+    relationships=[rel("Мира Ветрова", "Тихон Бреве", "враг", "Теперь Тихон Бреве был её врагом", state="предательство",
+                       change_note="Тихон выдал ключ Эльдару"),
+                   rel("Тихон Бреве", "Эльдар Корн", "шантаж", "Ты поступил правильно, мальчик", state="зависимость")],
+    threads=[thread("Предательство Тихона", "Ключ у неё", "Тихон выдал местонахождение ключа")],
+)
+DEEP[(B1, "Глава 7. Ультиматум")] = D(
+    goals=[goal("Мира Ветрова", REVENGE, "Мысль о мести она отложила на потом", status="postponed",
+                change_note="защита Лины важнее мести"),
+           goal("Мира Ветрова", PROTECT, "Теперь для неё важнее всего было защитить Лину", status="active"),
+           goal("Эльдар Корн", ELDAR_GOAL, "У вас три дня, чтобы отдать ключ", goal_type="stated",
+                desired_result="получить серебряный ключ")],
+    relationships=[rel("Мира Ветрова", "Эльдар Корн", "враг", "Вы убили Аларика", state="открытая вражда",
+                       change_note="ультиматум Эльдара")],
+    questions=[question("mystery", KILLER_Q, "Аларик сам выбрал свою судьбу", status="partial",
+                        resolution="Эльдар не отрицает причастность")],
+)
+DEEP[(B1, "Глава 8. Погасший огонь")] = D(
+    questions=[question("mystery", KEY_Q, "Ключ вошёл легко, но не повернулся",
+                        clues=["ключ входит в замок железной двери башни, но не поворачивается"]),
+               question("prophecy", "Когда огонь на башне погаснет, ключ найдёт свой замок", "пламя вдруг дрогнуло и погасло",
+                        status="partial", resolution="Огонь погас, но замок не открылся")],
+    motifs=[motif("Пламя", "recurring_motif", "пламя вдруг дрогнуло и погасло", "огонь на башне гаснет")],
+)
+DEEP[(B2, "Глава 1. Подвал башни")] = D(
+    questions=[question("mystery", KEY_Q, "Теперь серебряный ключ повернулся без усилия", status="resolved",
+                        resolution="Ключ открывает дверь в подвал Западной башни после нажатия на знак пламени")],
+)
+DEEP[(B2, "Глава 2. Признание Тихона")] = D(
+    goals=[goal("Тихон Бреве", TIKHON_GOAL, "Теперь Тихон потерял и отца, потому что Эльдар не сдержал слово", status="failed",
+                change_note="Эльдар не сдержал слово")],
+    relationships=[rel("Мира Ветрова", "Тихон Бреве", "союзник", "они снова стали союзниками", state="недоверие, но союз",
+                       change_note="Тихон признался")],
+)
+DEEP[(B2, "Глава 3. Реестр")] = D(
+    goals=[goal("Мира Ветрова", REVENGE, "Месть, которую она отложила ради сестры, снова стала целью её жизни", status="active",
+                change_note="Лина в безопасности"),
+           goal("Мира Ветрова", PROTECT, "Лина теперь была в безопасности", status="achieved")],
+    questions=[question("mystery", KILLER_Q, "Он убил Аларика, чтобы заставить его замолчать", status="resolved",
+                        resolution="Аларика убил Эльдар Корн, чтобы заставить его замолчать"),
+               question("secret", "Что такое Огненный реестр и почему из-за него спорили Аларик и Эльдар?",
+                        "В свитке перечислялись тайные сделки Гильдии", status="resolved",
+                        resolution="Реестр содержит тайные сделки Гильдии и доказательства вины Эльдара")],
+)
+
+for (_b, _ch), _resp in CORE.items():
+    SUMMARIES[(_b, _ch)] = {"summary": f"Сводка главы: {_resp['summary']}",
+                            "key_points": [e["description"] for e in _resp["events"]][:3], "open_threads": []}

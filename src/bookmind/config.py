@@ -41,6 +41,7 @@ class Settings(BaseModel):
     task_max_attempts: int = 3          # попыток на задачу анализа (фрагмент/глава)
     parse_retries: int = 1              # повторные запросы при некорректном JSON
     temperature: float = 0.1
+    arc_size: int = 4                   # число глав в сводке сюжетной арки
     chunk_chars_min: int = 1500
     chunk_chars_max: int = 3000
     chunk_overlap_chars: int = 200

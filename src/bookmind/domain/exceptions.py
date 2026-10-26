@@ -35,3 +35,7 @@ class ModelOutputError(BookMindError):
     def __init__(self, message: str, raw: str = ""):
         super().__init__(message)
         self.raw = raw
+
+
+class SkipTask(BookMindError):
+    """Задача не может быть выполнена из-за отсутствия входных данных; помечается skipped, а не failed."""

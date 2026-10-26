@@ -32,3 +32,15 @@ def test_verifier_positions_point_to_original_text():
     r = v.check("я найду того кто это сделал и заставлю его заплатить")
     assert r.verified and text[r.start:r.end].startswith("Я найду")
     assert not v.check("").verified and not v.check("Мира сбежала из города ночью").verified
+
+
+def test_gold_deep_quotes_exist_in_novel():
+    from tests.fixtures.scripted_llm import DEEP
+    bad = []
+    for key, resp in DEEP.items():
+        v = QuoteVerifier(_chapters()[key])
+        for group in ("goals", "relationships", "plot_threads", "questions", "motifs"):
+            for item in resp[group]:
+                if not v.check(item["quote"]).verified:
+                    bad.append((key[1], item["quote"]))
+    assert bad == []

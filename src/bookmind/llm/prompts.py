@@ -5,7 +5,7 @@ import hashlib
 from importlib import resources
 from pathlib import Path
 
-NAMES = ("core_analysis", "deep_analysis", "chapter_summary", "contradiction_check", "question_review", "answer")
+NAMES = ("core_analysis", "deep_analysis", "chapter_summary", "arc_summary", "contradiction_check", "question_review", "answer")
 SYSTEM_JSON = ("Ты возвращаешь только валидный JSON без пояснений. Все текстовые значения пиши по-русски. "
                "Никогда не придумывай факты, которых нет во фрагменте.")
 

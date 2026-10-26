@@ -12,12 +12,13 @@ from typing import Any, Callable
 from bookmind.analysis.context import ContextBuilder
 from bookmind.analysis.extractor import LLM, StructuredCaller
 from bookmind.analysis.models import load_chunk_ref
+from bookmind.analysis.deep_persister import DeepPersister
 from bookmind.analysis.persister import CorePersister
 from bookmind.config import Settings
 from bookmind.domain.exceptions import (
-    BookMindError, CancelledError, ModelNotInstalledError, ModelOutputError, OllamaRequestError, OllamaUnavailableError,
+    BookMindError, CancelledError, ModelNotInstalledError, SkipTask, ModelOutputError, OllamaRequestError, OllamaUnavailableError,
 )
-from bookmind.domain.schemas import CoreAnalysis
+from bookmind.domain.schemas import ChapterSummary, CoreAnalysis, DeepAnalysis
 from bookmind.ingestion.chunking import context_before
 from bookmind.llm.prompts import PromptStore
 from bookmind.services.purge import purge_book_analysis
@@ -53,7 +54,8 @@ ProgressCb = Callable[[Progress], None]
 
 
 class AnalysisPipeline:
-    STAGES_ORDER: tuple[str, ...] = ("core",)
+    STAGES_ORDER: tuple[str, ...] = ("core", "deep", "chapter_summary", "arc_summary")
+    DEFAULT_STAGES: tuple[str, ...] = ("core",)
 
     def __init__(self, db: Database, llm: LLM, settings: Settings, data_dir: Path | None = None,
                  prompts: PromptStore | None = None):
@@ -64,16 +66,18 @@ class AnalysisPipeline:
         self.caller = StructuredCaller(llm, settings)
         self.context = ContextBuilder(db)
         self.core_persister = CorePersister(db)
-        self.handlers: dict[str, Callable[[Any, str, str], tuple[str, list[str], Callable[[], list[str]]]]] = {"core": self._core}
-        self.task_scope: dict[str, str] = {"core": "chunk"}
+        self.deep_persister = DeepPersister(db)
+        self.handlers: dict[str, Callable[[Any, str, str], tuple[str, list[str], Callable[[], list[str]]]]] = {
+            "core": self._core, "deep": self._deep, "chapter_summary": self._chapter_summary, "arc_summary": self._arc_summary}
+        self.task_scope: dict[str, str] = {"core": "chunk", "deep": "chunk", "chapter_summary": "chapter", "arc_summary": "arc"}
 
     # ---- запуск/возобновление ----
     def prompt_version(self, stages: tuple[str, ...]) -> str:
-        names = {"core": "core_analysis", "deep": "deep_analysis", "chapter_summary": "chapter_summary"}
+        names = {"core": "core_analysis", "deep": "deep_analysis", "chapter_summary": "chapter_summary", "arc_summary": "arc_summary"}
         return self.prompts.version(*[names[s] for s in stages])
 
     def start(self, book_id: str, model: str, stages: tuple[str, ...] | None = None, replace: bool = False) -> str:
-        stages = tuple(s for s in self.STAGES_ORDER if s in (stages or self.STAGES_ORDER))
+        stages = tuple(s for s in self.STAGES_ORDER if s in (stages or self.DEFAULT_STAGES))
         if self.library.get_book(book_id) is None:
             raise BookMindError("Книга не найдена")
         version = self.prompt_version(stages)
@@ -104,6 +108,11 @@ class AnalysisPipeline:
             if self.task_scope.get(stage) == "chapter":
                 for ch in chapters:
                     self.tasks.ensure_task(run_id, stage, "chapter", ch["id"], ch["idx"])
+            elif self.task_scope.get(stage) == "arc":
+                size = max(1, self.settings.arc_size)
+                if len(chapters) > size:
+                    for k in range(0, (len(chapters) + size - 1) // size):
+                        self.tasks.ensure_task(run_id, stage, "arc", f"{book_id}:arc:{k}", k)
             else:
                 for c in chunks:
                     self.tasks.ensure_task(run_id, stage, "chunk", c["id"], c["idx"])
@@ -142,6 +151,8 @@ class AnalysisPipeline:
                         with self.db.transaction():  # результат и отметка «выполнено» сохраняются атомарно
                             extra = apply() or []
                             self.tasks.mark_done(task["id"], raw, issues + extra, time.monotonic() - t0)
+                    except SkipTask as exc:
+                        self.tasks.mark_done(task["id"], "", [str(exc)], time.monotonic() - t0, status="skipped")
                     except CancelledError:
                         self.db.execute("UPDATE analysis_tasks SET status = 'pending', attempts = attempts - 1 WHERE id = ?", (task["id"],))
                         self.tasks.set_run_status(run_id, "paused")
@@ -175,6 +186,8 @@ class AnalysisPipeline:
         if task["scope_type"] == "chunk":
             loc = self.library.chunk_location(task["scope_id"])
             return (loc["chapter_title"], loc["idx"]) if loc else ("", 0)
+        if task["scope_type"] == "arc":
+            return (f"арка {task['seq'] + 1}", task["seq"])
         ch = self.library.get_chapter(task["scope_id"])
         return (ch["title"], ch["idx"]) if ch else ("", 0)
 
@@ -193,3 +206,79 @@ class AnalysisPipeline:
             return self.core_persister.save(chunk, run_id, core, offered).issues
 
         return raw, issues, apply
+
+    def _deep(self, task, model: str, run_id: str):
+        chunk = load_chunk_ref(self.db, task["scope_id"])
+        chapter = self.library.get_chapter(chunk.chapter_id)
+        ctx_before = context_before(chapter["text"], chunk.start_char, self.settings.chunk_overlap_chars)
+        entities_block, offered = self.context.known_entities_block(chunk)
+        prompt = self.prompts.render(
+            "deep_analysis", book_title=chunk.book_title, chapter_title=chunk.chapter_title,
+            known_entities=entities_block, known_goals=self.context.known_goals_block(chunk, offered),
+            open_questions=self.context.open_questions_block(chunk), context_before=ctx_before or "(начало главы)",
+            text=chunk.text)
+        deep, raw, issues = self.caller.call(model, prompt, DeepAnalysis)
+
+        def apply() -> list[str]:
+            return self.deep_persister.save(chunk, run_id, deep, offered).issues
+
+        return raw, issues, apply
+
+    def _chapter_summary(self, task, model: str, run_id: str):
+        chapter = self.library.get_chapter(task["scope_id"])
+        book = self.library.get_book(chapter["book_id"])
+        sums = self.db.query(
+            "SELECT r.content FROM report_versions r JOIN chunks c ON c.id = r.scope_id WHERE r.kind = 'chunk_summary' "
+            "AND r.run_id = ? AND c.chapter_id = ? ORDER BY c.idx", (run_id, chapter["id"]))
+        if not sums:
+            raise SkipTask("нет сводок фрагментов главы (этап core не выполнен)")
+        events = self.db.query("SELECT description FROM events WHERE chapter_id = ? AND verification = 'verified' ORDER BY seq",
+                               (chapter["id"],))
+        prompt = self.prompts.render(
+            "chapter_summary", book_title=book["title"], chapter_title=chapter["title"],
+            chunk_summaries="\n".join(f"- {s['content']}" for s in sums),
+            events="\n".join(f"- {e['description']}" for e in events) or "(нет)")
+        obj, raw, issues = self.caller.call(model, prompt, ChapterSummary)
+
+        def apply() -> list[str]:
+            self._save_report("chapter_summary", book, chapter["id"], chapter["title"], obj, run_id, model)
+            return []
+
+        return raw, issues, apply
+
+    def _arc_summary(self, task, model: str, run_id: str):
+        book_id, _, k = task["scope_id"].split(":")
+        book = self.library.get_book(book_id)
+        size = max(1, self.settings.arc_size)
+        chapters = self.library.chapters_of(book_id)[int(k) * size:(int(k) + 1) * size]
+        lines = []
+        for ch in chapters:
+            r = self.db.one("SELECT content FROM report_versions WHERE kind = 'chapter_summary' AND scope_id = ? AND run_id = ? "
+                            "ORDER BY version DESC LIMIT 1", (ch["id"], run_id))
+            if r:
+                lines.append(f"{ch['title']}: {r['content']}")
+        if not lines:
+            raise SkipTask("нет сводок глав для арки")
+        title = f"Арка {int(k) + 1}: {chapters[0]['title']} — {chapters[-1]['title']}"
+        prompt = self.prompts.render("arc_summary", book_title=book["title"],
+                                     chapter_range=f"{chapters[0]['title']} — {chapters[-1]['title']}",
+                                     chapter_summaries="\n".join(lines))
+        obj, raw, issues = self.caller.call(model, prompt, ChapterSummary)
+
+        def apply() -> list[str]:
+            self._save_report("arc_summary", book, task["scope_id"], title, obj, run_id, model)
+            return []
+
+        return raw, issues, apply
+
+    def _save_report(self, kind: str, book, scope_id: str, title: str, obj: ChapterSummary, run_id: str, model: str) -> None:
+        from bookmind.storage.database import new_id, now_iso
+        version = (self.db.scalar("SELECT COALESCE(MAX(version), 0) FROM report_versions WHERE kind = ? AND scope_id = ?",
+                                  (kind, scope_id)) or 0) + 1
+        body = obj.summary + ("\n\nКлючевые моменты:\n" + "\n".join(f"- {p}" for p in obj.key_points) if obj.key_points else "")
+        self.db.insert("report_versions", {
+            "id": new_id(), "series_id": book["series_id"], "book_id": book["id"], "scope_id": scope_id, "kind": kind,
+            "title": title, "content": body,
+            "structured_json": json.dumps({"summary": obj.summary, "key_points": obj.key_points, "open_threads": obj.open_threads},
+                                          ensure_ascii=False),
+            "run_id": run_id, "model": model, "version": version, "created_at": now_iso()})
