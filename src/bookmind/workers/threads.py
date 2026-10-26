@@ -78,3 +78,27 @@ class AskThread(_Base):
 
     def work(self) -> None:
         self.answered.emit(self.ctx.qa().ask(self.question, self.series_id, self.model, self.up_to))
+
+
+class AdaptThread(_Base):
+    """Создание/продолжение проекта новой книги в фоне."""
+    progress = Signal(object)
+    created = Signal(str)
+    finished_run = Signal(object)
+
+    def __init__(self, ctx, model: str, project_id: str | None = None, series_id: str = "", params=None, title: str = ""):
+        super().__init__()
+        self.ctx, self.model, self.project_id, self.series_id, self.params, self.title = ctx, model, project_id, series_id, params, title
+        self.cancel_event = threading.Event()
+
+    def stop(self) -> None:
+        self.cancel_event.set()
+        self.ctx.client.cancel()
+
+    def work(self) -> None:
+        svc = self.ctx.adaptation()
+        self.ctx.client.reset_cancel()
+        if self.project_id is None:
+            self.project_id = svc.create(self.series_id, self.params, self.title)
+            self.created.emit(self.project_id)
+        self.finished_run.emit(svc.run(self.project_id, self.model, on_progress=lambda p: self.progress.emit(p), cancel=self.cancel_event))

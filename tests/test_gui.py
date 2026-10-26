@@ -15,7 +15,7 @@ from bookmind.llm.ollama_client import OllamaClient  # noqa: E402
 from bookmind.ui.context import AppContext  # noqa: E402
 from bookmind.ui.main_window import MainWindow, TablePage  # noqa: E402
 from bookmind.ui import views  # noqa: E402
-from bookmind.workers.threads import AnalysisThread, AskThread, ModelThread  # noqa: E402
+from bookmind.workers.threads import AdaptThread, AnalysisThread, AskThread, ModelThread  # noqa: E402
 from tests.conftest import FakeOllama  # noqa: E402
 from tests.fixtures.builders import write_txt  # noqa: E402
 from tests.fixtures.novel import BOOK1, BOOK1_TITLE  # noqa: E402
@@ -151,3 +151,31 @@ def test_model_thread_install_and_update(ctx):
     t2.start()
     wait(t2)
     assert len(done) == 2
+
+
+def test_new_book_tab_creates_and_shows_plan(ctx, qapp, tmp_path):
+    from bookmind.analysis.extractor import StructuredCaller
+    from bookmind.creation.schemas import AdaptParams
+    from bookmind.creation.service import AdaptationService
+    res = ctx.library.import_book(write_txt(tmp_path / "b.txt", BOOK1), title=BOOK1_TITLE)
+    p = ctx.pipeline()
+    assert p.run(p.start(res.book_id, MODEL, ("core", "deep", "chapter_summary"))).status == "completed"
+    ctx.adaptation = lambda: AdaptationService(ctx.db, StructuredCaller(ctx.llm, ctx.settings), ctx.settings, ctx.prompts)
+    win = MainWindow(ctx)
+    assert "Новая книга" in [win.tabs.tabText(i) for i in range(win.tabs.count())]
+    sid = win.current_series()
+    t = AdaptThread(ctx, MODEL, None, sid, AdaptParams(seed=1, pause_after_plan=True), "Тест")
+    got, made = [], []
+    t.finished_run.connect(got.append)
+    t.created.connect(made.append)
+    t.start()
+    wait(t)
+    assert got and got[0].status == "awaiting_review" and made
+    win.adapt_reload()
+    assert win.ad_projects.count() == 1 and win.ad_table.rowCount() == 8
+    assert "ждёт вашей проверки" in win.ad_label.text()
+    win.ad_table.selectRow(0)
+    assert "Отсек 1" in win.ad_detail.toPlainText()
+    win.adapt_bible()
+    assert "Тишина на орбите" in win.ad_detail.toPlainText()
+    win.close()

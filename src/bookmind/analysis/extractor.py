@@ -23,11 +23,12 @@ class StructuredCaller:
     def __init__(self, llm: LLM, settings: Settings):
         self.llm, self.settings = llm, settings
 
-    def options(self) -> dict[str, Any]:
+    def options(self, temperature: float | None = None) -> dict[str, Any]:
         return {"num_ctx": self.settings.num_ctx, "num_predict": self.settings.num_predict,
-                "temperature": self.settings.temperature}
+                "temperature": self.settings.temperature if temperature is None else temperature}
 
-    def call(self, model: str, user_prompt: str, schema_model: type[T]) -> tuple[T, str, list[str]]:
+    def call(self, model: str, user_prompt: str, schema_model: type[T],
+             temperature: float | None = None) -> tuple[T, str, list[str]]:
         """Возвращает (объект, сырой ответ, замечания). После исчерпания попыток — ModelOutputError."""
         user = user_prompt
         last: ModelOutputError | None = None
@@ -35,7 +36,7 @@ class StructuredCaller:
         raw = ""
         for attempt in range(self.settings.parse_retries + 1):
             raw = self.llm.chat(model, [{"role": "system", "content": SYSTEM_JSON}, {"role": "user", "content": user}],
-                                schema=schema, options=self.options(), think=False)
+                                schema=schema, options=self.options(temperature), think=False)
             try:
                 obj, issues = parse_model_json(raw, schema_model)
                 if attempt:

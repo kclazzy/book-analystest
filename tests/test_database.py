@@ -50,12 +50,12 @@ def test_migrations_idempotent_and_backup_on_upgrade(data_dir, monkeypatch):
     assert d2.scalar("SELECT COUNT(*) FROM series") == 1
     d2.close()
     from bookmind.storage import migrations
-    monkeypatch.setattr(migrations, "MIGRATIONS", MIGRATIONS + [(2, "CREATE TABLE extra_test (id INTEGER PRIMARY KEY);")])
+    monkeypatch.setattr(migrations, "MIGRATIONS", MIGRATIONS + [(99, "CREATE TABLE extra_test (id INTEGER PRIMARY KEY);")])
     d3 = Database(path)
     assert d3.scalar("SELECT COUNT(*) FROM extra_test") == 0
     assert d3.scalar("SELECT COUNT(*) FROM series") == 1
     d3.close()
-    assert list(data_dir.glob("x.sqlite.pre-v2-*.bak"))
+    assert list(data_dir.glob("x.sqlite.pre-v99-*.bak"))
 
 
 def test_integrity_report(db):

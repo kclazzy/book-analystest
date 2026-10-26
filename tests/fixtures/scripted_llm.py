@@ -217,6 +217,12 @@ class ScriptedLLM:
             stage, table = "question_review", self.extra.get("question_review", {})
         elif "Верни JSON: answer" in prompt:
             stage, table = "answer", self.extra.get("answer", {})
+        elif "Верни JSON: title, logline" in prompt:
+            stage, table = "adapt_premise", {}
+        elif "Верни JSON: members" in prompt:
+            stage, table = "adapt_cast", {}
+        elif "Верни JSON: title, summary (4–7" in prompt:
+            stage, table = "adapt_chapter", {}
         else:
             stage, table = "unknown", {}
         self.calls.append((stage, chapter))
@@ -225,6 +231,11 @@ class ScriptedLLM:
             raise plan
         if isinstance(plan, str):
             return plan
+        if stage.startswith("adapt_"):
+            from tests.fixtures import adapt_script as A
+            default = {"adapt_premise": lambda p: A.premise(), "adapt_cast": A.cast, "adapt_chapter": A.chapter}[stage]
+            handler = self.extra.get("adapt_handler")
+            return json.dumps(handler(stage, prompt, default) if handler else default(prompt), ensure_ascii=False)
         if stage in ("contradiction", "question_review", "answer"):
             handler = table.get("handler") if isinstance(table, dict) else None
             return json.dumps(handler(prompt) if handler else table.get("default", {}), ensure_ascii=False)

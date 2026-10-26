@@ -410,9 +410,39 @@ CREATE VIRTUAL TABLE search_index USING fts5(
 );
 """
 
+MIGRATION_002 = """
+CREATE TABLE adaptation_projects (
+    id TEXT PRIMARY KEY,
+    series_id TEXT NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    params_json TEXT NOT NULL,
+    stage TEXT NOT NULL DEFAULT 'new',               -- new | skeleton | premise | cast | plan | review | done
+    status TEXT NOT NULL DEFAULT 'new',              -- new | running | paused | awaiting_review | completed | failed
+    model TEXT NOT NULL DEFAULT '',
+    skeleton_json TEXT NOT NULL DEFAULT '{}',
+    premise_json TEXT NOT NULL DEFAULT '{}',
+    cast_json TEXT NOT NULL DEFAULT '{}',
+    issues_json TEXT NOT NULL DEFAULT '[]',
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE adaptation_chapters (
+    project_id TEXT NOT NULL REFERENCES adaptation_projects(id) ON DELETE CASCADE,
+    idx INTEGER NOT NULL,
+    plan_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'pending',          -- pending | ok | flagged
+    attempts INTEGER NOT NULL DEFAULT 0,
+    check_json TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (project_id, idx)
+);
+"""
+
 # (версия, SQL-скрипт). Новые изменения схемы добавляются только новыми элементами.
 MIGRATIONS: list[tuple[int, str]] = [
     (1, MIGRATION_001),
+    (2, MIGRATION_002),
 ]
 
 
