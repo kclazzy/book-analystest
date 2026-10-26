@@ -55,7 +55,8 @@ def start_ollama(client: OllamaClient, *, exe: Path | None = None, wait_s: float
         return False, "Ollama не найден на этом компьютере. Установите его: " + OLLAMA_DOWNLOAD_URL
     kwargs: dict = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "stdin": subprocess.DEVNULL}
     if sys.platform == "win32":
-        kwargs["creationflags"] = 0x08000000 | 0x00000008     # CREATE_NO_WINDOW | DETACHED_PROCESS
+        kwargs.update(hidden_process_kwargs())
+        kwargs["creationflags"] = CREATE_NO_WINDOW | 0x00000008     # + DETACHED_PROCESS: Ollama переживает закрытие окна
     else:
         kwargs["start_new_session"] = True
     try:
@@ -71,16 +72,41 @@ def start_ollama(client: OllamaClient, *, exe: Path | None = None, wait_s: float
     return False, "Ollama запущен, но не отвечает. Подождите минуту и нажмите «Перепроверить»."
 
 
-def _gpu_info(run=subprocess.run) -> str | None:
-    exe = shutil.which("nvidia-smi")
-    if not exe:
-        return None
+CREATE_NO_WINDOW = 0x08000000
+_gpu_cache: dict[str, str | None] = {}
+
+
+def hidden_process_kwargs() -> dict:
+    """Параметры запуска дочерних программ без мигающего окна консоли (Windows)."""
+    if sys.platform != "win32":
+        return {}
+    kw: dict = {"creationflags": CREATE_NO_WINDOW}
     try:
-        out = run([exe, "--query-gpu=name,memory.total", "--format=csv,noheader"], capture_output=True, text=True, timeout=4)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    line = (out.stdout or "").strip().splitlines()
-    return line[0].strip() if out.returncode == 0 and line else None
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0
+        kw["startupinfo"] = si
+    except AttributeError:
+        pass
+    return kw
+
+
+def _gpu_info(run=subprocess.run) -> str | None:
+    """Название и объём видеокарты NVIDIA. Результат запоминается: видеокарта за время работы не меняется."""
+    if "gpu" in _gpu_cache:
+        return _gpu_cache["gpu"]
+    exe = shutil.which("nvidia-smi")
+    result = None
+    if exe:
+        try:
+            out = run([exe, "--query-gpu=name,memory.total", "--format=csv,noheader"], capture_output=True, text=True,
+                      timeout=4, stdin=subprocess.DEVNULL, **hidden_process_kwargs())
+            line = (out.stdout or "").strip().splitlines()
+            result = line[0].strip() if out.returncode == 0 and line else None
+        except (OSError, subprocess.SubprocessError):
+            result = None
+    _gpu_cache["gpu"] = result
+    return result
 
 
 def check_environment(client: OllamaClient, models: ModelManager, data_dir: Path, *, gpu_probe=_gpu_info) -> list[EnvCheck]:

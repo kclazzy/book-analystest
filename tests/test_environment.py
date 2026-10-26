@@ -135,3 +135,33 @@ def test_data_dir_for_installed_app(monkeypatch, tmp_path):
     assert config.default_data_dir() == tmp_path / "BookMind"
     monkeypatch.setenv("BOOKMIND_DATA_DIR", str(tmp_path / "custom"))
     assert config.default_data_dir() == tmp_path / "custom"
+
+
+def test_gpu_probe_is_hidden_on_windows_and_cached(monkeypatch):
+    monkeypatch.setattr(env, "_gpu_cache", {})
+    monkeypatch.setattr(env.shutil, "which", lambda n: "C:/nvidia-smi.exe")
+    monkeypatch.setattr(env.sys, "platform", "win32")
+    calls = []
+    class P:
+        returncode, stdout = 0, "NVIDIA RTX 5070, 12288 MiB\n"
+    def run(cmd, **kw):
+        calls.append(kw)
+        return P()
+    assert env._gpu_info(run) == "NVIDIA RTX 5070, 12288 MiB"
+    assert env._gpu_info(run) == "NVIDIA RTX 5070, 12288 MiB" and len(calls) == 1      # второй раз процесс не запускается
+    assert calls[0]["creationflags"] == env.CREATE_NO_WINDOW
+
+
+def test_gpu_probe_missing_is_cached_too(monkeypatch):
+    monkeypatch.setattr(env, "_gpu_cache", {})
+    monkeypatch.setattr(env.shutil, "which", lambda n: None)
+    assert env._gpu_info() is None and env._gpu_cache == {"gpu": None}
+
+
+def test_no_other_child_processes_in_app_code():
+    import re
+    from pathlib import Path
+    root = Path(env.__file__).resolve().parents[1]
+    offenders = [str(p.relative_to(root)) for p in root.rglob("*.py")
+                 if p.name != "environment.py" and re.search(r"\b(subprocess|os\.system|Popen)\b", p.read_text(encoding="utf-8"))]
+    assert offenders == []
