@@ -11,3 +11,6 @@ data/*/*
 !data/*/.gitkeep
 *.sqlite
 *.db
+
+.coverage
+htmlcov/
