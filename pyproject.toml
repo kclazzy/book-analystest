@@ -24,7 +24,7 @@ bookmind-models = "bookmind.main:cli"
 where = ["src"]
 
 [tool.setuptools.package-data]
-bookmind = ["data/*.json"]
+bookmind = ["data/*.json", "prompts/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

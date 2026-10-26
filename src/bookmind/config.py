@@ -38,6 +38,9 @@ class Settings(BaseModel):
     num_ctx: int = 8192
     num_predict: int = 2048
     max_concurrent_requests: int = 1
+    task_max_attempts: int = 3          # попыток на задачу анализа (фрагмент/глава)
+    parse_retries: int = 1              # повторные запросы при некорректном JSON
+    temperature: float = 0.1
     chunk_chars_min: int = 1500
     chunk_chars_max: int = 3000
     chunk_overlap_chars: int = 200

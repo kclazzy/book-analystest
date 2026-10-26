@@ -27,3 +27,11 @@ class CatalogError(BookMindError):
 
 class CancelledError(BookMindError):
     """Операция отменена пользователем."""
+
+
+class ModelOutputError(BookMindError):
+    """Ответ модели не удалось разобрать или он не соответствует схеме."""
+
+    def __init__(self, message: str, raw: str = ""):
+        super().__init__(message)
+        self.raw = raw

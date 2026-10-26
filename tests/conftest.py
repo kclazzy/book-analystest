@@ -81,3 +81,32 @@ def db(data_dir):
 @pytest.fixture
 def library(db, settings, data_dir):
     return LibraryService(db, settings, data_dir)
+
+
+# ---------- анализ ----------
+from tests.fixtures.builders import write_txt  # noqa: E402
+from tests.fixtures.novel import BOOK1, BOOK1_TITLE, BOOK2, BOOK2_TITLE  # noqa: E402
+from tests.fixtures.scripted_llm import ScriptedLLM  # noqa: E402
+from bookmind.analysis.pipeline import AnalysisPipeline  # noqa: E402
+
+MODEL = "qwen3.5:9b-q4_K_M"
+
+
+@pytest.fixture
+def model():
+    return MODEL
+
+
+@pytest.fixture
+def book1(library, tmp_path):
+    return library.import_book(write_txt(tmp_path / "book1.txt", BOOK1), title=BOOK1_TITLE)
+
+
+@pytest.fixture
+def llm():
+    return ScriptedLLM()
+
+
+@pytest.fixture
+def pipeline(db, llm, settings, data_dir):
+    return AnalysisPipeline(db, llm, settings, data_dir)
