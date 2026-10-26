@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+# Данные пользователя не коммитим
+data/*
+!data/*/
+data/*/*
+!data/*/.gitkeep
+*.sqlite
+*.db

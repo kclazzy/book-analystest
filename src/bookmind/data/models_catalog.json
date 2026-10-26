@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "note": "Каталог кандидатов. Наличие тега в реестре Ollama НЕ предполагается: оно проверяется при pull. approx_vram_gb — приблизительная оценка автора каталога (веса + небольшой контекст), не измерение. Каталог можно обновлять без изменения кода: положите свой models_catalog.json в каталог данных или выполните bookmind-models catalog-update <URL|файл>.",
+  "models": [
+    {"tag": "qwen3.5:9b-q4_K_M", "family": "qwen3.5", "params_b": 9, "quant": "Q4_K_M", "approx_vram_gb": 8, "roles": ["analysis", "qa"], "default": true, "description": "Основной вариант по ТЗ для RTX 5070 12 ГБ"},
+    {"tag": "qwen3.5:9b", "family": "qwen3.5", "params_b": 9, "quant": null, "approx_vram_gb": 8, "roles": ["analysis", "qa"], "default": false, "description": "Тег по умолчанию для 9B"},
+    {"tag": "qwen3.5:4b", "family": "qwen3.5", "params_b": 4, "quant": null, "approx_vram_gb": 4, "roles": ["analysis", "fast"], "default": false, "description": "Быстрая модель для черновой разметки"},
+    {"tag": "qwen3.5:27b", "family": "qwen3.5", "params_b": 27, "quant": null, "approx_vram_gb": 18, "roles": ["synthesis"], "default": false, "description": "Не помещается в 12 ГБ целиком; медленно с частичной выгрузкой в RAM"},
+    {"tag": "qwen3:8b", "family": "qwen3", "params_b": 8, "quant": null, "approx_vram_gb": 6, "roles": ["analysis", "qa"], "default": false, "description": "Предыдущее поколение, запасной вариант"},
+    {"tag": "qwen3:14b", "family": "qwen3", "params_b": 14, "quant": null, "approx_vram_gb": 11, "roles": ["synthesis", "qa"], "default": false, "description": "Предыдущее поколение, на границе 12 ГБ"},
+    {"tag": "qwen2.5:7b", "family": "qwen2.5", "params_b": 7, "quant": null, "approx_vram_gb": 6, "roles": ["analysis", "fast"], "default": false, "description": "Старое поколение, максимальная совместимость"}
+  ]
+}
