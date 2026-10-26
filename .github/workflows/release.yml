@@ -2,6 +2,7 @@ name: Windows-установщик
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     tags: ["v*"]
 permissions:
   contents: write
@@ -26,11 +27,17 @@ jobs:
           $env:BOOKMIND_DATA_DIR = Join-Path $env:RUNNER_TEMP "bm-data"
           $p = Start-Process -FilePath "dist\BookMind\BookMind.exe" -ArgumentList "recommend","--vram","12" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "BookMind.exe завершился с кодом $($p.ExitCode)" }
+      - name: Версия
+        id: ver
+        shell: pwsh
+        run: |
+          $ver = python -c "import sys; sys.path.insert(0,'src'); import bookmind; print(bookmind.__version__)"
+          "ver=$ver" >> $env:GITHUB_OUTPUT
       - name: Установщик (Inno Setup)
         shell: pwsh
         run: |
           choco install innosetup -y --no-progress
-          $ver = python -c "import sys; sys.path.insert(0,'src'); import bookmind; print(bookmind.__version__)"
+          $ver = "${{ steps.ver.outputs.ver }}"
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$ver" installer\bookmind.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC завершился с кодом $LASTEXITCODE" }
           Compress-Archive -Path dist\BookMind -DestinationPath "installer\Output\BookMind-portable-$ver.zip"
@@ -38,9 +45,12 @@ jobs:
         with:
           name: BookMind-Windows
           path: installer/Output/*
-      - name: Публикация релиза
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Публикация релиза (создаёт тег v<версия> на GitHub, если его нет)
+        if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.ver.outputs.ver }}
+          name: BookMind ${{ steps.ver.outputs.ver }}
+          target_commitish: ${{ github.sha }}
           files: installer/Output/*
           generate_release_notes: true
