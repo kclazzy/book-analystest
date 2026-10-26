@@ -1,0 +1,46 @@
+name: Windows-установщик
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  installer:
+    runs-on: windows-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[gui,dev]" pyinstaller
+      - run: python -m pytest -q
+      - name: Сборка приложения (PyInstaller)
+        run: pyinstaller bookmind.spec --noconfirm
+      - name: Проверка собранного приложения (запуск CLI из exe)
+        shell: pwsh
+        run: |
+          $env:BOOKMIND_DATA_DIR = Join-Path $env:RUNNER_TEMP "bm-data"
+          $p = Start-Process -FilePath "dist\BookMind\BookMind.exe" -ArgumentList "recommend","--vram","12" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "BookMind.exe завершился с кодом $($p.ExitCode)" }
+      - name: Установщик (Inno Setup)
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $ver = python -c "import sys; sys.path.insert(0,'src'); import bookmind; print(bookmind.__version__)"
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$ver" installer\bookmind.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC завершился с кодом $LASTEXITCODE" }
+          Compress-Archive -Path dist\BookMind -DestinationPath "installer\Output\BookMind-portable-$ver.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BookMind-Windows
+          path: installer/Output/*
+      - name: Публикация релиза
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: installer/Output/*
+          generate_release_notes: true

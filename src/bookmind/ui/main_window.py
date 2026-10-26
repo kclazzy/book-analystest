@@ -14,7 +14,8 @@ from bookmind.domain.exceptions import BookMindError
 from bookmind.ui import views
 from bookmind.ui.context import AppContext
 from bookmind.creation.schemas import DIVERGENCE_LABELS, KEEP_KINDS, AdaptParams
-from bookmind.workers.threads import AdaptThread, AnalysisThread, AskThread, ModelThread
+from bookmind.system.environment import OLLAMA_DOWNLOAD_URL, blocking_problems, start_ollama
+from bookmind.workers.threads import AdaptThread, AnalysisThread, AskThread, EnvThread, ModelThread
 
 STAGE_NAMES = [("core", "Основной анализ"), ("deep", "Цели, отношения, загадки"), ("chapter_summary", "Сводки глав"),
                ("arc_summary", "Сводки арок"), ("series", "Память серии (противоречия)")]
@@ -94,6 +95,9 @@ class MainWindow(QMainWindow):
         self.thread_model: ModelThread | None = None
         self.thread_ask: AskThread | None = None
         self.thread_adapt: AdaptThread | None = None
+        self.thread_env: EnvThread | None = None
+        self.env_checks: list = []
+        self._env_warned = False
         self.setWindowTitle("BookMind Local — анализ книг и серий")
         self.resize(1280, 800)
         self.tabs = QTabWidget()
@@ -123,12 +127,17 @@ class MainWindow(QMainWindow):
         self._build_qa()
         self._build_reports()
         self._build_models()
+        self._build_system()
         self._build_logs()
         self.series_box.currentIndexChanged.connect(self._series_changed)
         self.spoiler_box.currentIndexChanged.connect(lambda _: self.refresh_pages())
         self.tabs.currentChanged.connect(lambda _: self._tab_changed())
         self.reload_series()
         QTimer.singleShot(0, self.refresh_models)
+        QTimer.singleShot(0, lambda: self.check_env(first=True))
+        self.env_timer = QTimer(self)
+        self.env_timer.timeout.connect(self.check_env)
+        self.env_timer.start(15000)
 
     # ---------- общее ----------
     def log(self, text: str) -> None:
@@ -288,6 +297,8 @@ class MainWindow(QMainWindow):
         if not bid:
             return
         stages = tuple(k for k, cb in self.stage_boxes.items() if cb.isChecked())
+        if not self.ensure_ollama():
+            return
         if not stages:
             QMessageBox.information(self, "BookMind", "Выберите хотя бы один этап.")
             return
@@ -457,6 +468,8 @@ class MainWindow(QMainWindow):
         if not sid:
             QMessageBox.information(self, "BookMind", "Сначала выберите серию.")
             return
+        if not self.ensure_ollama():
+            return
         try:
             model = self.selected_model()
         except BookMindError as exc:
@@ -562,7 +575,7 @@ class MainWindow(QMainWindow):
 
     def ask(self) -> None:
         sid, q = self.current_series(), self.qa_edit.text().strip()
-        if not sid or not q or (self.thread_ask and self.thread_ask.isRunning()):
+        if not sid or not q or (self.thread_ask and self.thread_ask.isRunning()) or not self.ensure_ollama():
             return
         try:
             model = self.selected_model()
@@ -732,7 +745,7 @@ class MainWindow(QMainWindow):
         if action != "update_all" and not tag:
             QMessageBox.information(self, "BookMind", "Выберите модель в таблице.")
             return
-        if self.thread_model and self.thread_model.isRunning():
+        if (self.thread_model and self.thread_model.isRunning()) or not self.ensure_ollama():
             return
         t = ModelThread(self.ctx, action, tag)
         t.progress.connect(self._model_progress)
@@ -751,6 +764,90 @@ class MainWindow(QMainWindow):
             self.model_progress.setMaximum(100)
             self.model_progress.setValue(done * 100 // total)
         self.model_label.setText(str(e.get("status", "")))
+
+    # ---------- проверка системы ----------
+    def _build_system(self) -> None:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.addWidget(QLabel("Для работы нужны Ollama (запущенный) и хотя бы одна модель Qwen. Состояние обновляется автоматически."))
+        self.env_table = QTableWidget(0, 3)
+        self.env_table.setHorizontalHeaderLabels(["Проверка", "Состояние", "Подробности"])
+        self.env_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.env_table.horizontalHeader().setStretchLastSection(True)
+        lay.addWidget(self.env_table, 1)
+        row = QHBoxLayout()
+        for text, fn in (("Запустить Ollama", self.start_ollama_clicked), ("Скачать Ollama", self.open_ollama_download),
+                         ("Перейти к моделям", lambda: self.tabs.setCurrentWidget(self.models_table.parentWidget())),
+                         ("Перепроверить", lambda: self.check_env(force=True))):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            row.addWidget(b)
+        row.addStretch()
+        lay.addLayout(row)
+        self.tabs.addTab(w, "Система")
+        self.sys_tab = w
+
+    def check_env(self, first: bool = False, force: bool = False) -> None:
+        if self.thread_env and self.thread_env.isRunning():
+            return
+        t = EnvThread(self.ctx)
+        t.result.connect(lambda checks: self._env_done(checks, first))
+        t.failed.connect(lambda text: self.log(f"Проверка системы: {text.splitlines()[0]}"))
+        self.thread_env = t
+        t.start()
+
+    def _env_done(self, checks: list, first: bool) -> None:
+        self.env_checks = checks
+        icons = {"ok": "✔ в порядке", "warn": "⚠ внимание", "error": "✖ проблема"}
+        self.env_table.setRowCount(len(checks))
+        for r, c in enumerate(checks):
+            for col, v in enumerate([c.title, icons[c.level], c.detail]):
+                self.env_table.setItem(r, col, QTableWidgetItem(v))
+        self.env_table.resizeColumnsToContents()
+        bad = blocking_problems(checks)
+        if bad:
+            self.status_label.setText("⚠ " + bad[0].title.replace("установлен", "не готов").replace("запущен", "не запущен") + " — вкладка «Система»")
+            if first and not self._env_warned:
+                self._env_warned = True
+                self.tabs.setCurrentWidget(self.sys_tab)
+                box = QMessageBox(QMessageBox.Warning, "Проверка системы",
+                                  "Для работы нужно:\n\n" + "\n".join(f"• {c.title}: {c.detail}" for c in bad), QMessageBox.Ok, self)
+                box.setWindowModality(Qt.NonModal)      # не блокирует окно: можно сразу нажать «Запустить Ollama»
+                box.show()
+                self._env_box = box
+        else:
+            self.status_label.setText("Ollama запущен, модель готова")
+            self._env_warned = False
+        self.refresh_models_quiet()
+
+    def refresh_models_quiet(self) -> None:
+        if any(c.key == "ollama_running" and c.ok for c in self.env_checks) and self.models_table.rowCount() == 0:
+            self.refresh_models()
+
+    def start_ollama_clicked(self) -> None:
+        ok, msg = start_ollama(self.ctx.client)
+        self.log(msg)
+        if not ok:
+            QMessageBox.warning(self, "Ollama", msg)
+        self.check_env(force=True)
+
+    def open_ollama_download(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        QDesktopServices.openUrl(QUrl(OLLAMA_DOWNLOAD_URL))
+
+    def ensure_ollama(self) -> bool:
+        """Перед тяжёлой операцией: если Ollama не отвечает, предлагает запустить его."""
+        if self.ctx.client.is_available():
+            return True
+        if QMessageBox.question(self, "Ollama не запущен", "Для этого действия нужен запущенный Ollama. Запустить его сейчас?") != QMessageBox.Yes:
+            return False
+        ok, msg = start_ollama(self.ctx.client)
+        self.log(msg)
+        if not ok:
+            QMessageBox.warning(self, "Ollama", msg)
+        self.check_env(force=True)
+        return ok
 
     # ---------- журнал ----------
     def _build_logs(self) -> None:

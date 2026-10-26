@@ -4,6 +4,18 @@ from __future__ import annotations
 import sys
 
 
+def _setup_logging(data_dir) -> None:
+    import logging
+    from logging.handlers import RotatingFileHandler
+    try:
+        h = RotatingFileHandler(data_dir / "logs" / "bookmind.log", maxBytes=2_000_000, backupCount=3, encoding="utf-8")
+        h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        logging.getLogger().addHandler(h)
+        logging.getLogger().setLevel(logging.INFO)
+    except OSError:
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         from PySide6.QtWidgets import QApplication
@@ -15,6 +27,7 @@ def main(argv: list[str] | None = None) -> int:
 
     app = QApplication(argv if argv is not None else sys.argv)
     ctx = AppContext()
+    _setup_logging(ctx.data_dir)
     win = MainWindow(ctx)
     win.show()
     code = app.exec()

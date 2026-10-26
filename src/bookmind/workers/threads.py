@@ -102,3 +102,16 @@ class AdaptThread(_Base):
             self.project_id = svc.create(self.series_id, self.params, self.title)
             self.created.emit(self.project_id)
         self.finished_run.emit(svc.run(self.project_id, self.model, on_progress=lambda p: self.progress.emit(p), cancel=self.cancel_event))
+
+
+class EnvThread(_Base):
+    """Проверка окружения в фоне, чтобы окно не подвисало, если Ollama отвечает медленно."""
+    result = Signal(list)
+
+    def __init__(self, ctx):
+        super().__init__()
+        self.ctx = ctx
+
+    def work(self) -> None:
+        from bookmind.system.environment import check_environment
+        self.result.emit(check_environment(self.ctx.client, self.ctx.models, self.ctx.data_dir))

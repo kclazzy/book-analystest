@@ -179,3 +179,30 @@ def test_new_book_tab_creates_and_shows_plan(ctx, qapp, tmp_path):
     win.adapt_bible()
     assert "Тишина на орбите" in win.ad_detail.toPlainText()
     win.close()
+
+
+def test_system_tab_reports_state_and_blocks_nothing_when_ready(ctx, qapp):
+    win = MainWindow(ctx)
+    win.check_env()
+    wait(win.thread_env)
+    assert win.env_table.rowCount() >= 5
+    rows = {win.env_table.item(r, 0).text(): win.env_table.item(r, 1).text() for r in range(win.env_table.rowCount())}
+    assert rows["Ollama запущен"].startswith("✔") and rows["Модель Qwen установлена"].startswith("✔")
+    assert "готова" in win.status_label.text()
+    win.close()
+
+
+def test_system_tab_when_ollama_missing(tmp_path, qapp, monkeypatch):
+    from bookmind.system import environment as env
+    monkeypatch.setattr(env, "find_ollama_exe", lambda *a, **k: None)
+    def down(request):
+        raise httpx.ConnectError("refused")
+    c = AppContext(tmp_path / "d", client=OllamaClient("http://test", max_retries=0, transport=httpx.MockTransport(down), sleep=lambda s: None))
+    win = MainWindow(c)
+    win.check_env(first=True)
+    wait(win.thread_env)
+    rows = {win.env_table.item(r, 0).text(): win.env_table.item(r, 1).text() for r in range(win.env_table.rowCount())}
+    assert rows["Ollama установлен"].startswith("✖") and rows["Ollama запущен"].startswith("✖")
+    assert "Система" in win.status_label.text() and win.tabs.currentWidget() is win.sys_tab
+    win.close()
+    c.close()

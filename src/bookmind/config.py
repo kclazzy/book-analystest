@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -16,6 +17,9 @@ def default_data_dir() -> Path:
     env = os.environ.get(ENV_DATA_DIR)
     if env:
         return Path(env)
+    if getattr(sys, "frozen", False):          # установленное приложение: папка Program Files недоступна для записи
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+        return Path(base) / "BookMind"
     return Path.cwd() / "data"
 
 
