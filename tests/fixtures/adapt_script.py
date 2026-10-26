@@ -46,3 +46,21 @@ def chapter(prompt: str) -> dict:
             "outcome": "картина становится сложнее", "characters": [pov, other], "relationship_changes": [f"{pov} и {other} сближаются"],
             "clues_planted": [f"деталь номер {n}"] if beats else [], "reveals": [], "hook": "в динамиках раздаётся чужой голос",
             "beats_covered": beats}
+
+
+def prose(prompt: str) -> str:
+    """Подставной текст части главы: нужной длины, без имён оригинала, абзацы не повторяются."""
+    words = int(re.search(r"примерно (\d+) слов", prompt).group(1))
+    part = int(re.search(r"часть (\d+) из", prompt).group(1))
+    number = int(re.search(r"главы (\d+) «", prompt).group(1))
+    heroes = re.findall(r"^- ([^()\n]+?) \(", prompt.split("ГЕРОИ")[1].split("ЧТО БЫЛО")[0], re.MULTILINE)
+    out, n, k = [], 0, 0
+    while n < words * 1.1:
+        h = heroes[(number + k) % len(heroes)]
+        para = (f"{h} остановился в секторе {number}, часть {part}, абзац {k + 1}, и прислушался к гулу станции. "
+                f"Кислорода оставалось на {10 + k} суток, а ответов не прибавлялось, и каждый шаг по коридору отдавался в висках. "
+                f"— Мы не можем ждать, — сказал {h} и впервые за долгое время не отвёл взгляда.")
+        out.append(para)
+        n += len(para.split())
+        k += 1
+    return "\n\n".join(out)

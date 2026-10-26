@@ -439,10 +439,19 @@ CREATE TABLE adaptation_chapters (
 );
 """
 
+MIGRATION_003 = """
+ALTER TABLE adaptation_chapters ADD COLUMN text TEXT NOT NULL DEFAULT '';
+ALTER TABLE adaptation_chapters ADD COLUMN text_status TEXT NOT NULL DEFAULT 'none';   -- none | partial | ok | flagged
+ALTER TABLE adaptation_chapters ADD COLUMN text_parts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE adaptation_chapters ADD COLUMN text_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE adaptation_chapters ADD COLUMN text_check_json TEXT NOT NULL DEFAULT '{}';
+"""
+
 # (версия, SQL-скрипт). Новые изменения схемы добавляются только новыми элементами.
 MIGRATIONS: list[tuple[int, str]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
+    (3, MIGRATION_003),
 ]
 
 

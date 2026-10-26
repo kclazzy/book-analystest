@@ -266,3 +266,60 @@ def test_gui_change_data_dir_and_reset(ctx, qapp, tmp_path, monkeypatch):
     win.reset_data_dir()
     assert config.read_pointer() is None
     win.close()
+
+
+def _book_ctx(ctx, tmp_path):
+    from bookmind.analysis.extractor import StructuredCaller
+    from bookmind.creation.service import AdaptationService
+    from bookmind.creation.writer import BookWriter
+    ctx.library.import_book(write_txt(tmp_path / "b.txt", BOOK1), title=BOOK1_TITLE)
+    ctx.adaptation = lambda: AdaptationService(ctx.db, StructuredCaller(ctx.llm, ctx.settings), ctx.settings, ctx.prompts)
+    ctx.writer = lambda: BookWriter(ctx.adaptation())
+
+
+def test_full_book_button_runs_whole_conveyor(ctx, qapp, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+    _book_ctx(ctx, tmp_path)
+    win = MainWindow(ctx)
+    out = tmp_path / "result.epub"
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(out), ""))
+    win.ad_words.setValue(300)
+    win.ad_pause.setChecked(True)               # для полного конвейера пауза на проверку плана не должна мешать
+    win.full_book()
+    wait(win.thread_adapt, 60000)
+    assert out.exists() and "Книга готова" in win.ad_label.text()
+    assert win.ad_table.rowCount() == 8 and win.ad_table.item(0, 5).text().startswith("готов")
+    win.ad_table.selectRow(0)
+    assert "ТЕКСТ ГЛАВЫ" in win.ad_detail.toPlainText()
+    win.close()
+
+
+def test_write_buttons_and_save_book(ctx, qapp, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+    from bookmind.creation.schemas import AdaptParams
+    _book_ctx(ctx, tmp_path)
+    p = ctx.pipeline()
+    assert p.run(p.start(ctx.repo.list_books()[0]["id"], MODEL, ("core", "chapter_summary"))).status == "completed"
+    win = MainWindow(ctx)
+    t = AdaptThread(ctx, MODEL, None, win.current_series(), AdaptParams(seed=1, chapter_words=300), "Тест")
+    t.start()
+    wait(t)
+    win.adapt_reload()
+    shown = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: shown.append(a[2]))
+    win.write_selected()
+    assert shown and "Выберите главу" in shown[0]
+    win.ad_table.selectRow(2)
+    win.ad_words.setValue(300)
+    win.write_selected()
+    wait(win.thread_adapt)
+    assert win.ad_table.item(2, 5).text().startswith("готов") and win.ad_table.item(0, 5).text() == "—"
+    out = tmp_path / "part.md"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(out), ""))
+    win.book_save()
+    assert "## Глава 3" in out.read_text(encoding="utf-8")
+    win.write_all()
+    wait(win.thread_adapt)
+    assert all(win.ad_table.item(r, 5).text().startswith("готов") for r in range(8))
+    win.close()

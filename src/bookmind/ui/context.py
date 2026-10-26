@@ -7,6 +7,7 @@ from bookmind.analysis.extractor import StructuredCaller
 from bookmind.analysis.pipeline import AnalysisPipeline
 from bookmind.config import Settings, default_data_dir
 from bookmind.creation.service import AdaptationService
+from bookmind.creation.writer import BookWriter
 from bookmind.llm.catalog import load_catalog
 from bookmind.llm.model_manager import ModelManager
 from bookmind.llm.ollama_client import OllamaClient
@@ -55,6 +56,9 @@ class AppContext:
 
     def adaptation(self) -> AdaptationService:
         return AdaptationService(self.db, StructuredCaller(self.client, self.settings), self.settings, self.prompts)
+
+    def writer(self) -> BookWriter:
+        return BookWriter(self.adaptation())
 
     def qa(self) -> QAService:
         return QAService(self.db, StructuredCaller(self.client, self.settings), self.prompts)

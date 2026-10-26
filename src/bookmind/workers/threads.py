@@ -104,6 +104,49 @@ class AdaptThread(_Base):
         self.finished_run.emit(svc.run(self.project_id, self.model, on_progress=lambda p: self.progress.emit(p), cancel=self.cancel_event))
 
 
+class WriteThread(_Base):
+    """Написание текста глав в фоне."""
+    progress = Signal(object)
+    finished_run = Signal(object)
+
+    def __init__(self, ctx, model: str, project_id: str, chapters: list[int] | None = None, rewrite: bool = False):
+        super().__init__()
+        self.ctx, self.model, self.project_id, self.chapters, self.rewrite = ctx, model, project_id, chapters, rewrite
+        self.cancel_event = threading.Event()
+
+    def stop(self) -> None:
+        self.cancel_event.set()
+        self.ctx.client.cancel()
+
+    def work(self) -> None:
+        self.ctx.client.reset_cancel()
+        res = self.ctx.writer().write(self.project_id, self.model, self.chapters, self.rewrite,
+                                      on_progress=lambda p: self.progress.emit(p), cancel=self.cancel_event)
+        self.finished_run.emit(res)
+
+
+class FullBookThread(_Base):
+    """Весь конвейер: анализ серии → план → текст → файл."""
+    progress = Signal(object)
+    finished_run = Signal(object)
+
+    def __init__(self, ctx, model: str, series_id: str, params=None, project_id: str | None = None, export_path=None):
+        super().__init__()
+        self.ctx, self.model, self.series_id, self.params, self.project_id, self.export_path = ctx, model, series_id, params, project_id, export_path
+        self.cancel_event = threading.Event()
+
+    def stop(self) -> None:
+        self.cancel_event.set()
+        self.ctx.client.cancel()
+
+    def work(self) -> None:
+        from bookmind.creation.full import run_full_book
+        self.ctx.client.reset_cancel()
+        res = run_full_book(self.ctx.pipeline(), self.ctx.adaptation(), self.ctx.writer(), self.series_id, self.model, self.params,
+                            self.project_id, self.export_path, on_progress=lambda p: self.progress.emit(p), cancel=self.cancel_event)
+        self.finished_run.emit(res)
+
+
 class EnvThread(_Base):
     """Проверка окружения в фоне, чтобы окно не подвисало, если Ollama отвечает медленно."""
     result = Signal(list)

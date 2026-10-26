@@ -223,6 +223,8 @@ class ScriptedLLM:
             stage, table = "adapt_cast", {}
         elif "Верни JSON: title, summary (4–7" in prompt:
             stage, table = "adapt_chapter", {}
+        elif "Верни только текст части" in prompt:
+            stage, table = "write_part", {}
         else:
             stage, table = "unknown", {}
         self.calls.append((stage, chapter))
@@ -231,6 +233,10 @@ class ScriptedLLM:
             raise plan
         if isinstance(plan, str):
             return plan
+        if stage == "write_part":
+            from tests.fixtures import adapt_script as A
+            handler = self.extra.get("write_handler")
+            return handler(prompt, A.prose) if handler else A.prose(prompt)
         if stage.startswith("adapt_"):
             from tests.fixtures import adapt_script as A
             default = {"adapt_premise": lambda p: A.premise(), "adapt_cast": A.cast, "adapt_chapter": A.chapter}[stage]

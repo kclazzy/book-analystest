@@ -20,7 +20,7 @@ from bookmind import __version__
 from bookmind.system.updater import is_frozen
 from bookmind.system import datadir
 from bookmind.workers.threads import (
-    AdaptThread, AnalysisThread, AskThread, EnvThread, ModelThread, UpdateCheckThread, UpdateDownloadThread,
+    AdaptThread, AnalysisThread, AskThread, EnvThread, FullBookThread, ModelThread, UpdateCheckThread, UpdateDownloadThread, WriteThread,
 )
 
 STAGE_NAMES = [("core", "Основной анализ"), ("deep", "Цели, отношения, загадки"), ("chapter_summary", "Сводки глав"),
@@ -396,6 +396,11 @@ class MainWindow(QMainWindow):
         self.ad_pause = QCheckBox("Остановиться на проверку плана перед продолжением")
         self.ad_pause.setChecked(True)
         form.addRow("", self.ad_pause)
+        self.ad_words = QSpinBox()
+        self.ad_words.setRange(200, 6000)
+        self.ad_words.setSingleStep(100)
+        self.ad_words.setValue(1200)
+        form.addRow("Слов в главе (ориентир):", self.ad_words)
         lay.addLayout(form)
         row = QHBoxLayout()
         self.ad_projects = QComboBox()
@@ -411,10 +416,21 @@ class MainWindow(QMainWindow):
             self.ad_btns[key] = b
             row.addWidget(b)
         lay.addLayout(row)
+        row2 = QHBoxLayout()
+        for key, text, fn in (("write_sel", "Написать выбранную главу", self.write_selected), ("write_all", "Написать все главы", self.write_all),
+                              ("rewrite", "Переписать выбранную", self.rewrite_selected), ("export", "Сохранить книгу…", self.book_save),
+                              ("full", "Создать книгу целиком", self.full_book)):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            self.ad_btns[key] = b
+            row2.addWidget(b)
+        self.ad_btns["full"].setToolTip("Анализ книг серии → сюжет и план → текст всех глав → файл. Занимает много времени; можно остановить и продолжить.")
+        row2.addStretch()
+        lay.addLayout(row2)
         self.ad_label = QLabel("Выберите серию с проанализированными книгами и нажмите «Создать и запустить».")
         lay.addWidget(self.ad_label)
-        self.ad_table = QTableWidget(0, 5)
-        self.ad_table.setHorizontalHeaderLabels(["Глава", "Название", "Статус", "Попыток", "Сходство"])
+        self.ad_table = QTableWidget(0, 6)
+        self.ad_table.setHorizontalHeaderLabels(["Глава", "Название", "План", "Попыток", "Сходство", "Текст"])
         self.ad_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.ad_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.ad_table.horizontalHeader().setStretchLastSection(True)
@@ -446,9 +462,14 @@ class MainWindow(QMainWindow):
         rep = self.ctx.adaptation().report(pid)
         names = {"ok": "готова", "flagged": "требует внимания", "pending": "в работе"}
         self.ad_table.setRowCount(len(rep["chapters"]))
+        wr = self.ctx.writer()
+        tstat = wr.text_status(pid)
+        tw = {i: len(wr.chapter_text(pid, i).split()) for i, st in tstat.items() if st != "none"}
         for r, c in enumerate(rep["chapters"]):
             sim = f"{c['check'].get('similarity', 0):.0%}" if c["check"] else ""
-            for col, v in enumerate([c["idx"] + 1, c["title"], names.get(c["status"], c["status"]), c["attempts"], sim]):
+            tn = {"none": "—", "partial": "пишется", "ok": f"готов ({tw.get(c['idx'], 0)} сл.)", "flagged": "требует внимания"}
+            for col, v in enumerate([c["idx"] + 1, c["title"], names.get(c["status"], c["status"]), c["attempts"], sim,
+                                     tn.get(tstat.get(c["idx"], "none"), "—")]):
                 self.ad_table.setItem(r, col, QTableWidgetItem(str(v)))
         self.ad_table.resizeColumnsToContents()
         status = {"completed": "готово", "awaiting_review": "ждёт вашей проверки плана", "paused": "приостановлено",
@@ -469,12 +490,18 @@ class MainWindow(QMainWindow):
             lines = [plan.title, "", plan.summary, "", f"Точка зрения: {plan.pov}; место: {plan.location}", f"Цель: {plan.goal}",
                      f"Конфликт: {plan.conflict}", f"Итог: {plan.outcome}", f"Крючок: {plan.hook}"]
             lines += ["", "Замечания проверки:", *[f"  ⚠ {i}" for i in rep["issues"]]] if rep["issues"] else []
+            wr = self.ctx.writer()
+            text = wr.chapter_text(pid, idx)
+            if text:
+                lines += ["", "—" * 20, "ТЕКСТ ГЛАВЫ", "", text]
+                lines += ["", "Замечания к тексту:", *[f"  ⚠ {i}" for i in wr.issues(pid, idx)]] if wr.issues(pid, idx) else []
             self.ad_detail.setPlainText("\n".join(lines))
 
     def _adapt_params(self) -> AdaptParams:
         return AdaptParams(divergence=self.ad_div.currentData(), chapters=self.ad_chapters.value() or None,
                            genre=self.ad_genre.text().strip(), setting=self.ad_setting.text().strip(),
-                           keep=[k for k, cb in self.ad_keep.items() if cb.isChecked()], pause_after_plan=self.ad_pause.isChecked())
+                           keep=[k for k, cb in self.ad_keep.items() if cb.isChecked()], pause_after_plan=self.ad_pause.isChecked(),
+                           chapter_words=self.ad_words.value())
 
     def _adapt_start(self, pid: str | None) -> None:
         if self.thread_adapt and self.thread_adapt.isRunning():
@@ -526,6 +553,126 @@ class MainWindow(QMainWindow):
     def _adapt_failed(self, text: str) -> None:
         self.error(text)
         self.adapt_reload()
+
+    # ---------- текст книги ----------
+    def _start_job(self, t) -> None:
+        t.progress.connect(self._job_progress)
+        t.finished_run.connect(self._job_finished)
+        t.failed.connect(self._adapt_failed)
+        self.thread_adapt = t
+        t.start()
+
+    def _job_ready(self) -> str | None:
+        """Общие проверки перед фоновой работой; возвращает имя модели."""
+        if self.thread_adapt and self.thread_adapt.isRunning():
+            self.log("Уже идёт работа над книгой — дождитесь окончания или остановите её.")
+            return None
+        if not self.ensure_ollama():
+            return None
+        try:
+            return self.selected_model()
+        except BookMindError as exc:
+            self.error(str(exc))
+            return None
+
+    def _selected_chapter(self) -> int | None:
+        rows = self.ad_table.selectionModel().selectedRows()
+        return int(self.ad_table.item(rows[0].row(), 0).text()) - 1 if rows else None
+
+    def _write(self, chapters: list[int] | None, rewrite: bool = False) -> None:
+        pid = self.ad_projects.currentData()
+        if not pid:
+            QMessageBox.information(self, "BookMind", "Сначала создайте проект и дождитесь плана глав.")
+            return
+        if self.ctx.adaptation().report(pid)["status"] == "awaiting_review":
+            QMessageBox.information(self, "BookMind", "Сначала проверьте план и нажмите «Подтвердить план».")
+            return
+        model = self._job_ready()
+        if model:
+            p = self.ctx.adaptation().params(pid)
+            p.chapter_words = self.ad_words.value()
+            self.ctx.adaptation()._save(pid, params_json=p.model_dump_json())
+            self._start_job(WriteThread(self.ctx, model, pid, chapters, rewrite))
+
+    def write_selected(self) -> None:
+        idx = self._selected_chapter()
+        if idx is None:
+            QMessageBox.information(self, "BookMind", "Выберите главу в таблице.")
+        else:
+            self._write([idx])
+
+    def rewrite_selected(self) -> None:
+        idx = self._selected_chapter()
+        if idx is None:
+            QMessageBox.information(self, "BookMind", "Выберите главу в таблице.")
+        else:
+            self._write([idx], rewrite=True)
+
+    def write_all(self) -> None:
+        self._write(None)
+
+    def _ask_book_path(self) -> str:
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить книгу", str(self.ctx.data_dir / "exports" / "new_book.epub"),
+            "EPUB (*.epub);;FictionBook (*.fb2);;Markdown (*.md);;Текст (*.txt)")
+        return path
+
+    def book_save(self) -> None:
+        from bookmind.creation.book_export import export_book
+        pid = self.ad_projects.currentData()
+        if not pid:
+            return
+        path = self._ask_book_path()
+        if path:
+            try:
+                export_book(self.ctx.writer().book(pid), Path(path))
+            except BookMindError as exc:
+                self.error(str(exc))
+                return
+            self.log(f"Книга сохранена: {path}")
+
+    def full_book(self) -> None:
+        sid = self.current_series()
+        if not sid:
+            QMessageBox.information(self, "BookMind", "Сначала выберите серию.")
+            return
+        if QMessageBox.question(self, "Создать книгу целиком",
+                                "Будут проанализированы книги серии, составлен сюжет и план, написан текст всех глав и сохранён файл. "
+                                "Это может занять часы. Работу можно остановить и продолжить позже. Начать?") != QMessageBox.Yes:
+            return
+        path = self._ask_book_path()
+        if not path:
+            return
+        model = self._job_ready()
+        if not model:
+            return
+        pid = self.ad_projects.currentData()
+        if pid:
+            self.ctx.adaptation().approve(pid)
+        params = self._adapt_params()
+        params.pause_after_plan = False
+        self._start_job(FullBookThread(self.ctx, model, sid, params, pid, Path(path)))
+
+    def _job_progress(self, p) -> None:
+        text = getattr(p, "message", "") or getattr(p, "stage", "")
+        phase = {"analysis": "Анализ", "plan": "План", "write": "Текст", "export": "Файл"}.get(getattr(p, "phase", ""), "")
+        self.ad_label.setText(f"{phase}: {text}".strip(": "))
+
+    def _job_finished(self, r) -> None:
+        if hasattr(r, "path"):          # итог полного конвейера
+            msg = {"completed": f"Книга готова: {r.path}" if r.path else "Книга готова", "paused": f"Остановлено. {r.message}",
+                   "failed": f"Ошибка. {r.message}", "needs_review": f"Нужна проверка плана. {r.message}"}.get(r.status, r.status)
+        else:                            # итог написания глав
+            msg = {"completed": f"Написано глав: {r.written}", "paused": f"Остановлено. {r.message}", "failed": f"Ошибка. {r.message}"}.get(r.status, r.status)
+        if r.flagged:
+            msg += f". Требуют внимания главы: {', '.join(str(i + 1) for i in r.flagged)}"
+        self.log(msg)
+        pid = getattr(r, "project_id", None)
+        self.adapt_reload()
+        if pid:
+            self.ad_projects.setCurrentIndex(max(self.ad_projects.findData(pid), 0))
+        self.adapt_refresh()
+        self.ad_label.setText(msg)
 
     def adapt_bible(self) -> None:
         pid = self.ad_projects.currentData()

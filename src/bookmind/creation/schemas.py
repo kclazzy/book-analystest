@@ -25,6 +25,7 @@ class AdaptParams(BaseModel):
     max_replans: int = 2                   # сколько раз пересоставлять главу, не прошедшую проверку
     source_book_ids: list[str] = Field(default_factory=list)   # пусто — все книги серии
     approved: bool = False
+    chapter_words: int = 1200              # ориентир длины главы при написании текста
 
 
 class Premise(_Base):
