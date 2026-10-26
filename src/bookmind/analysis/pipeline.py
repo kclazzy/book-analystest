@@ -154,6 +154,9 @@ class AnalysisPipeline:
                     except TRANSIENT as exc:
                         log.warning("Задача %s не выполнена: %s", task["id"], exc)
                         self.tasks.mark_failed(task["id"], str(exc), getattr(exc, "raw", ""), time.monotonic() - t0)
+                    except Exception as exc:  # непредвиденная ошибка одной задачи не должна ронять весь анализ
+                        log.exception("Внутренняя ошибка в задаче %s", task["id"])
+                        self.tasks.mark_failed(task["id"], f"Внутренняя ошибка: {exc!r}", "", time.monotonic() - t0)
                     report(stage, "готово", label[0], label[1])
             progress = {s: self.tasks.progress(run_id, s) for s in stages}
             failed = sum(p.get("failed", 0) for p in progress.values())

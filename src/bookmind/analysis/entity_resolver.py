@@ -12,6 +12,7 @@ from bookmind.services.search import stem
 from bookmind.storage.database import Database, new_id, now_iso
 
 AUTO_LINK_THRESHOLD = 0.7
+AMBIGUITY_GAP = 0.1
 RECENT_CHUNKS = 5
 
 
@@ -41,6 +42,11 @@ class EntityResolver:
             return None
         alias_keys = {k for k in (norm_key(a) for a in aliases) if k and k != key}
         matches, via_alias_only = self._exact_matches(key, alias_keys, etype.value)
+        if via_alias_only:
+            # совпадение только по алиасу допустимо, если имена не конфликтуют («Эльдар» ⊂ «Эльдар Корн»),
+            # но не для «Тихон Рыбак» и «Тихон Бреве»
+            mine = _stems(key)
+            matches = [m for m in matches if mine <= _stems(m["name_norm"]) or _stems(m["name_norm"]) <= mine]
 
         if len(matches) == 1:
             ent = matches[0]
@@ -55,14 +61,19 @@ class EntityResolver:
             return ResolveResult(created, "new", score, True, [ent["id"]])
 
         if len(matches) > 1:
+            scored = sorted(((self._score(e, key, alias_keys, chunk, descriptor, offered_ids, via_alias_only), e) for e in matches),
+                            key=lambda x: -x[0])
+            best, second = scored[0], scored[1]
+            if best[0] >= self.threshold and round(best[0] - second[0], 3) >= AMBIGUITY_GAP:
+                ent = best[1]
+                res = "exact" if ent["name_norm"] == key else "alias"
+                self._link(ent["id"], name, aliases, descriptor, chunk, run_id, res, best[0])
+                return ResolveResult(ent["id"], res, best[0], False)
             created = self._create(name, etype, aliases, descriptor, chunk, run_id, review=True)
-            scores = []
-            for ent in matches:
-                s = self._score(ent, key, alias_keys, chunk, descriptor, offered_ids, via_alias_only)
-                scores.append(s)
-                self._candidate(ent["id"], created, s, "имя подходит нескольким сущностям: нужен выбор вручную")
-            self._mention(created, name, chunk, run_id, "ambiguous", max(scores))
-            return ResolveResult(created, "ambiguous", max(scores), True, [e["id"] for e in matches])
+            for s_, ent in scored:
+                self._candidate(ent["id"], created, s_, "имя подходит нескольким сущностям: нужен выбор вручную")
+            self._mention(created, name, chunk, run_id, "ambiguous", best[0])
+            return ResolveResult(created, "ambiguous", best[0], True, [e["id"] for _, e in scored])
 
         created = self._create(name, etype, aliases, descriptor, chunk, run_id, review=False)
         partial = self._partial_matches(key, etype.value, exclude=created)
@@ -138,7 +149,7 @@ class EntityResolver:
     # ---- оценка ----
     def _score(self, ent, key, alias_keys, chunk: ChunkRef, descriptor: str, offered: frozenset[str],
                via_alias_only: bool) -> float:
-        score = 0.5 if via_alias_only else 0.65
+        score = 0.45 if via_alias_only else 0.65
         same_book = ent["first_book_id"] == chunk.book_id or bool(self.db.scalar(
             "SELECT 1 FROM entity_mentions m JOIN chunks c ON c.id = m.chunk_id WHERE m.entity_id = ? AND c.book_id = ? LIMIT 1",
             (ent["id"], chunk.book_id)))
