@@ -20,6 +20,7 @@ from bookmind.services.qa import QAService
 from bookmind.services.reports import ReportService
 from bookmind.services.search import SearchIndex
 from bookmind.storage.database import Database
+from bookmind.system.updater import Updater, launch_installer
 from bookmind.storage.repositories import LibraryRepo, TaskRepo
 
 
@@ -57,6 +58,20 @@ class AppContext:
 
     def qa(self) -> QAService:
         return QAService(self.db, StructuredCaller(self.client, self.settings), self.prompts)
+
+    def updater(self) -> Updater:
+        return Updater(self.settings.update_repo)
+
+    def apply_update(self, installer: Path, launch=launch_installer) -> Path | None:
+        """Резервная копия данных и запуск установщика. Возвращает путь к копии (None, если создать не удалось)."""
+        from bookmind import __version__
+        backup = None
+        try:
+            backup = self.backup.create(self.data_dir / "backups" / f"pre-update-{__version__}.zip")
+        except Exception:      # обновление не должно срываться из-за копии; пользователь увидит предупреждение
+            backup = None
+        launch(installer)
+        return backup
 
     def save_settings(self) -> None:
         self.settings.save(self.data_dir)

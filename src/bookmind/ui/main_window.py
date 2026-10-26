@@ -1,11 +1,12 @@
 """Главное окно BookMind Local (русский интерфейс)."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QFormLayout, QSpinBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QFormLayout, QGroupBox, QSpinBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow,
     QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget,
     QTextBrowser, QVBoxLayout, QWidget,
 )
@@ -15,7 +16,11 @@ from bookmind.ui import views
 from bookmind.ui.context import AppContext
 from bookmind.creation.schemas import DIVERGENCE_LABELS, KEEP_KINDS, AdaptParams
 from bookmind.system.environment import OLLAMA_DOWNLOAD_URL, blocking_problems, start_ollama
-from bookmind.workers.threads import AdaptThread, AnalysisThread, AskThread, EnvThread, ModelThread
+from bookmind import __version__
+from bookmind.system.updater import is_frozen
+from bookmind.workers.threads import (
+    AdaptThread, AnalysisThread, AskThread, EnvThread, ModelThread, UpdateCheckThread, UpdateDownloadThread,
+)
 
 STAGE_NAMES = [("core", "Основной анализ"), ("deep", "Цели, отношения, загадки"), ("chapter_summary", "Сводки глав"),
                ("arc_summary", "Сводки арок"), ("series", "Память серии (противоречия)")]
@@ -96,6 +101,9 @@ class MainWindow(QMainWindow):
         self.thread_ask: AskThread | None = None
         self.thread_adapt: AdaptThread | None = None
         self.thread_env: EnvThread | None = None
+        self.thread_update: UpdateCheckThread | None = None
+        self.thread_download: UpdateDownloadThread | None = None
+        self.update_info = None
         self.env_checks: list = []
         self._env_warned = False
         self.setWindowTitle("BookMind Local — анализ книг и серий")
@@ -111,6 +119,10 @@ class MainWindow(QMainWindow):
         h.addWidget(self.spoiler_box, 1)
         self.status_label = QLabel("")
         h.addWidget(self.status_label, 3)
+        self.update_btn = QPushButton("Доступно обновление")
+        self.update_btn.setVisible(False)
+        self.update_btn.clicked.connect(lambda: self.tabs.setCurrentWidget(self.sys_tab))
+        h.addWidget(self.update_btn)
         central = QWidget()
         lay = QVBoxLayout(central)
         lay.addWidget(top)
@@ -135,6 +147,8 @@ class MainWindow(QMainWindow):
         self.reload_series()
         QTimer.singleShot(0, self.refresh_models)
         QTimer.singleShot(0, lambda: self.check_env(first=True))
+        if self.ctx.settings.check_updates_on_start and not os.environ.get("BOOKMIND_NO_UPDATE_CHECK"):
+            QTimer.singleShot(2000, lambda: self.check_update(manual=False))
         self.env_timer = QTimer(self)
         self.env_timer.timeout.connect(self.check_env)
         self.env_timer.start(15000)
@@ -784,8 +798,117 @@ class MainWindow(QMainWindow):
             row.addWidget(b)
         row.addStretch()
         lay.addLayout(row)
+        box = QGroupBox("Обновление приложения")
+        bl = QVBoxLayout(box)
+        self.up_label = QLabel(f"Установлена версия {__version__}")
+        self.up_notes = QTextBrowser()
+        self.up_notes.setMaximumHeight(110)
+        self.up_progress = QProgressBar()
+        self.up_progress.setVisible(False)
+        bl.addWidget(self.up_label)
+        bl.addWidget(self.up_notes)
+        bl.addWidget(self.up_progress)
+        urow = QHBoxLayout()
+        self.up_check_btn = QPushButton("Проверить обновления")
+        self.up_install_btn = QPushButton("Скачать и установить")
+        self.up_install_btn.setEnabled(False)
+        self.up_page_btn = QPushButton("Страница релиза")
+        self.up_page_btn.setEnabled(False)
+        self.up_auto = QCheckBox("Проверять при запуске (запрос к github.com)")
+        self.up_auto.setChecked(self.ctx.settings.check_updates_on_start)
+        self.up_check_btn.clicked.connect(lambda: self.check_update(manual=True))
+        self.up_install_btn.clicked.connect(self.install_update)
+        self.up_page_btn.clicked.connect(self.open_release_page)
+        self.up_auto.toggled.connect(self._toggle_auto_update)
+        for b in (self.up_check_btn, self.up_install_btn, self.up_page_btn, self.up_auto):
+            urow.addWidget(b)
+        urow.addStretch()
+        bl.addLayout(urow)
+        lay.addWidget(box)
         self.tabs.addTab(w, "Система")
         self.sys_tab = w
+
+    # ---------- обновление приложения ----------
+    def _toggle_auto_update(self, on: bool) -> None:
+        self.ctx.settings.check_updates_on_start = on
+        self.ctx.save_settings()
+
+    def check_update(self, manual: bool = False) -> None:
+        if self.thread_update and self.thread_update.isRunning():
+            return
+        self.up_label.setText("Проверяю наличие новой версии…")
+        t = UpdateCheckThread(self.ctx)
+        t.result.connect(lambda res: self._update_checked(res, manual))
+        t.failed.connect(lambda text: self.up_label.setText("Не удалось проверить обновления"))
+        self.thread_update = t
+        t.start()
+
+    def _update_checked(self, res, manual: bool) -> None:
+        self.update_info = res.latest if res.available else None
+        self.up_install_btn.setEnabled(bool(res.available))
+        self.up_page_btn.setEnabled(bool(res.latest and res.latest.page_url))
+        self.update_btn.setVisible(bool(res.available))
+        if res.error:
+            self.up_label.setText(f"Версия {res.current}. {res.error}" if manual else f"Установлена версия {res.current}")
+            self.up_notes.clear()
+        elif res.available:
+            note = "" if is_frozen() else " (запуск из исходников: обновляйте через `git pull`, автоустановка недоступна)"
+            sums = "" if res.latest.sha256 else " Контрольная сумма в релизе не указана."
+            self.up_label.setText(f"Доступна версия {res.latest.version} (у вас {res.current}).{sums}{note}")
+            self.up_notes.setPlainText(res.latest.notes or "Описание изменений не указано.")
+            self.update_btn.setText(f"Доступно обновление {res.latest.version}")
+            if not is_frozen():
+                self.up_install_btn.setEnabled(False)
+        else:
+            self.up_label.setText(f"Установлена последняя версия {res.current}")
+            self.up_notes.clear()
+
+    def open_release_page(self) -> None:
+        if self.update_info and self.update_info.page_url:
+            from PySide6.QtCore import QUrl
+            from PySide6.QtGui import QDesktopServices
+            QDesktopServices.openUrl(QUrl(self.update_info.page_url))
+
+    def install_update(self) -> None:
+        info = self.update_info
+        if not info or (self.thread_download and self.thread_download.isRunning()):
+            return
+        if self.thread_analysis and self.thread_analysis.isRunning():
+            QMessageBox.information(self, "Обновление", "Идёт анализ. Остановите его (прогресс сохранится) и повторите обновление.")
+            return
+        if QMessageBox.question(self, "Обновление", f"Установить версию {info.version}?\n\nБудет создана резервная копия данных, приложение закроется и запустится заново. Ваши книги и результаты сохранятся.") != QMessageBox.Yes:
+            return
+        t = UpdateDownloadThread(self.ctx, info)
+        t.progress.connect(self._update_progress)
+        t.done.connect(self._update_downloaded)
+        t.failed.connect(self._update_failed)
+        self.thread_download = t
+        self.up_progress.setVisible(True)
+        self.up_progress.setValue(0)
+        self.up_install_btn.setEnabled(False)
+        t.start()
+
+    def _update_progress(self, done: int, total: int) -> None:
+        self.up_progress.setMaximum(max(total, 1))
+        self.up_progress.setValue(done)
+        self.up_label.setText(f"Скачиваю: {done / 1e6:.0f} из {total / 1e6:.0f} МБ")
+
+    def _update_failed(self, text: str) -> None:
+        self.up_progress.setVisible(False)
+        self.up_install_btn.setEnabled(True)
+        self.up_label.setText("Обновление не установлено")
+        self.error(text)
+
+    def _update_downloaded(self, path) -> None:
+        self.up_label.setText("Файл проверен. Запускаю установку…")
+        try:
+            backup = self.ctx.apply_update(Path(path))
+        except BookMindError as exc:
+            self._update_failed(str(exc))
+            return
+        self.log(f"Запущена установка {path}; резервная копия: {backup or 'не создана'}")
+        self.close()
+        QApplication.quit()
 
     def check_env(self, first: bool = False, force: bool = False) -> None:
         if self.thread_env and self.thread_env.isRunning():

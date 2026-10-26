@@ -40,6 +40,9 @@ jobs:
           $ver = "${{ steps.ver.outputs.ver }}"
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$ver" installer\bookmind.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC завершился с кодом $LASTEXITCODE" }
+          $setup = "installer\Output\BookMind-Setup-$ver.exe"
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
+          "$hash  BookMind-Setup-$ver.exe" | Out-File -Encoding ascii "$setup.sha256"
           Compress-Archive -Path dist\BookMind -DestinationPath "installer\Output\BookMind-portable-$ver.zip"
       - uses: actions/upload-artifact@v4
         with:

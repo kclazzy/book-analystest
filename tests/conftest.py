@@ -1,3 +1,6 @@
+import os
+os.environ.setdefault("BOOKMIND_NO_UPDATE_CHECK", "1")   # тесты не ходят в сеть
+
 import json
 import httpx
 import pytest

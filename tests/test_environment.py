@@ -163,5 +163,5 @@ def test_no_other_child_processes_in_app_code():
     from pathlib import Path
     root = Path(env.__file__).resolve().parents[1]
     offenders = [str(p.relative_to(root)) for p in root.rglob("*.py")
-                 if p.name != "environment.py" and re.search(r"\b(subprocess|os\.system|Popen)\b", p.read_text(encoding="utf-8"))]
+                 if p.name not in ("environment.py", "updater.py") and re.search(r"\b(subprocess|os\.system|Popen)\b", p.read_text(encoding="utf-8"))]
     assert offenders == []

@@ -206,3 +206,50 @@ def test_system_tab_when_ollama_missing(tmp_path, qapp, monkeypatch):
     assert "Система" in win.status_label.text() and win.tabs.currentWidget() is win.sys_tab
     win.close()
     c.close()
+
+
+def _fake_update(available=True, frozen=True):
+    from bookmind.system.updater import UpdateCheck, UpdateInfo
+    info = UpdateInfo("0.9.0", "v0.9.0", "https://github.com/x/BookMind-Setup-0.9.0.exe", "BookMind-Setup-0.9.0.exe", 10, "a" * 64,
+                      "Новые возможности", "https://github.com/x/releases/tag/v0.9.0")
+    return UpdateCheck("0.2.1", info, available)
+
+
+def test_update_ui_shows_available_version(ctx, qapp, monkeypatch):
+    from bookmind.ui import main_window as mw
+    monkeypatch.setattr(mw, "is_frozen", lambda: True)
+    win = MainWindow(ctx)
+    win._update_checked(_fake_update(), manual=True)
+    assert "0.9.0" in win.up_label.text() and win.up_install_btn.isEnabled() and "Новые возможности" in win.up_notes.toPlainText()
+    assert not win.update_btn.isHidden() and "0.9.0" in win.update_btn.text()
+    win._update_checked(_fake_update(available=False), manual=True)
+    assert win.update_btn.isHidden() and not win.up_install_btn.isEnabled() and "последняя" in win.up_label.text()
+    win.close()
+
+
+def test_update_ui_from_source_blocks_auto_install(ctx, qapp, monkeypatch):
+    from bookmind.ui import main_window as mw
+    monkeypatch.setattr(mw, "is_frozen", lambda: False)
+    win = MainWindow(ctx)
+    win._update_checked(_fake_update(), manual=True)
+    assert not win.up_install_btn.isEnabled() and "git pull" in win.up_label.text()
+    win.close()
+
+
+def test_update_error_is_quiet_on_startup_and_visible_on_manual(ctx, qapp):
+    from bookmind.system.updater import UpdateCheck
+    win = MainWindow(ctx)
+    res = UpdateCheck("0.2.1", error="Не удалось проверить обновления (нет сети?): ConnectError")
+    win._update_checked(res, manual=False)
+    assert "нет сети" not in win.up_label.text()
+    win._update_checked(res, manual=True)
+    assert "нет сети" in win.up_label.text()
+    win.close()
+
+
+def test_apply_update_makes_backup_then_launches(ctx, tmp_path):
+    res = ctx.library.import_book(write_txt(tmp_path / "b.txt", BOOK1), title=BOOK1_TITLE)
+    launched = []
+    backup = ctx.apply_update(tmp_path / "setup.exe", launch=launched.append)
+    assert launched == [tmp_path / "setup.exe"] and backup and backup.exists() and backup.name.startswith("pre-update-")
+    assert ctx.backup.verify(backup)["counts"]["books"] == 1

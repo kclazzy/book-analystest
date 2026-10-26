@@ -51,6 +51,8 @@ class Settings(BaseModel):
     chunk_chars_max: int = 3000
     chunk_overlap_chars: int = 200
     allow_cloud_models: bool = False  # по ТЗ облачные модели запрещены
+    check_updates_on_start: bool = True               # при запуске смотреть, нет ли новой версии (GitHub Releases)
+    update_repo: str = "kclazzy/book-analystest"
 
     @classmethod
     def load(cls, data_dir: Path | None = None) -> "Settings":

@@ -115,3 +115,32 @@ class EnvThread(_Base):
     def work(self) -> None:
         from bookmind.system.environment import check_environment
         self.result.emit(check_environment(self.ctx.client, self.ctx.models, self.ctx.data_dir))
+
+
+class UpdateCheckThread(_Base):
+    result = Signal(object)
+
+    def __init__(self, ctx):
+        super().__init__()
+        self.ctx = ctx
+
+    def work(self) -> None:
+        self.result.emit(self.ctx.updater().check())
+
+
+class UpdateDownloadThread(_Base):
+    progress = Signal(int, int)
+    done = Signal(object)
+
+    def __init__(self, ctx, info):
+        super().__init__()
+        self.ctx, self.info = ctx, info
+        self.cancel_event = threading.Event()
+
+    def stop(self) -> None:
+        self.cancel_event.set()
+
+    def work(self) -> None:
+        path = self.ctx.updater().download(self.info, self.ctx.data_dir / "cache" / "updates",
+                                           on_progress=lambda d, t: self.progress.emit(d, t), cancel=self.cancel_event)
+        self.done.emit(path)

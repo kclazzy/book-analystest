@@ -1,7 +1,7 @@
 ; Установщик BookMind Local (Inno Setup 6). Сборка: ISCC.exe /DAppVersion=0.2.0 installer\bookmind.iss
 ; Предварительно: pyinstaller bookmind.spec --noconfirm  (создаёт dist\BookMind)
 #ifndef AppVersion
-  #define AppVersion "0.2.1"
+  #define AppVersion "0.3.0"
 #endif
 
 [Setup]
@@ -22,6 +22,8 @@ SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayName=BookMind Local
 DisableProgramGroupPage=yes
+CloseApplications=yes
+RestartApplications=no
 
 [Languages]
 Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
@@ -37,7 +39,7 @@ Name: "{autoprograms}\BookMind"; Filename: "{app}\BookMind.exe"
 Name: "{autodesktop}\BookMind"; Filename: "{app}\BookMind.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\BookMind.exe"; Description: "Запустить BookMind"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\BookMind.exe"; Description: "Запустить BookMind"; Flags: nowait postinstall
 
 [Code]
 // Ollama — отдельная программа: установщик её не ставит, но предупреждает, если её нет.
