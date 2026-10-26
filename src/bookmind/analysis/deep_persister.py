@@ -259,6 +259,10 @@ class DeepPersister:
                     "series_id": ch.series_id, "owner_type": "question", "owner_id": qid, "field": "status",
                     "old_value": existing["status"], "new_value": q.status.value, "reason": q.resolution,
                     "chunk_id": ch.chunk_id, "run_id": ctx.run_id, "created_at": now_iso()})
+                self.db.insert("change_log", {
+                    "series_id": ch.series_id, "owner_type": "question", "owner_id": qid, "field": "resolution",
+                    "old_value": existing["resolution"], "new_value": upd["resolution"], "reason": "",
+                    "chunk_id": ch.chunk_id, "run_id": ctx.run_id, "created_at": now_iso()})
             self.db.update("open_questions", qid, upd)
             ctx.add_evidence("question", qid, q.quote)
             self.search.index("question", qid, ch.series_id, ch.book_id, ch.chapter_id, existing["kind"],

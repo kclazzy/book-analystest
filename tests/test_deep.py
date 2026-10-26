@@ -9,7 +9,7 @@ from bookmind.services.purge import purge_book_analysis
 from tests.fixtures import scripted_llm as sl
 from tests.fixtures.scripted_llm import ScriptedLLM
 
-ALL = AnalysisPipeline.STAGES_ORDER
+ALL = ("core", "deep", "chapter_summary", "arc_summary")
 
 
 @pytest.fixture

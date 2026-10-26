@@ -274,3 +274,42 @@ class KnowledgeService:
             if all(any(h.startswith(n) for h in hay) for n in needle):
                 out.append({"entity": f["name"], "statement": f["statement"], "sources": self.sources_for("fact", f["id"])})
         return out
+
+    # ---- память серии ----
+    def contradictions(self, series_id: str, status: str | None = "pending", entity_id: str | None = None) -> list[dict[str, Any]]:
+        from bookmind.domain.enums import ContradictionKind
+        sql = ("SELECT c.*, e.name AS entity_name FROM contradictions c LEFT JOIN entities e ON e.id = c.entity_id "
+               "WHERE c.series_id = ?")
+        params: list[Any] = [series_id]
+        if status:
+            sql += " AND c.status = ?"
+            params.append(status)
+        if entity_id:
+            sql += " AND c.entity_id = ?"
+            params.append(entity_id)
+        out = []
+        for c in self.db.query(sql + " ORDER BY c.created_at, c.rowid", params):
+            side = {}
+            for key in ("fact_a", "fact_b"):
+                f = self.db.one("SELECT f.statement, b.title AS book_title, b.series_order FROM facts f "
+                                "JOIN books b ON b.id = f.book_id WHERE f.id = ?", (c[key],))
+                side[key] = {"id": c[key], **dict(f), "sources": self.sources_for("fact", c[key])}
+            out.append({"id": c["id"], "entity_id": c["entity_id"], "entity_name": c["entity_name"], "category": c["category"],
+                        "kind": c["kind"], "kind_label": ContradictionKind(c["kind"]).label, "explanation": c["explanation"],
+                        "status": c["status"], "a": side["fact_a"], "b": side["fact_b"]})
+        return out
+
+    def set_contradiction_status(self, contradiction_id: str, status: str) -> None:
+        if status not in ("pending", "confirmed", "dismissed"):
+            raise ValueError(status)
+        self.db.execute("UPDATE contradictions SET status = ? WHERE id = ?", (status, contradiction_id))
+
+    def state_at(self, entity_id: str, book_order: int) -> dict[str, Any] | None:
+        """Сохранённый снимок состояния героя на конец тома (последнего, не позже book_order)."""
+        r = self.db.one(
+            "SELECT s.*, b.title AS book_title, b.series_order FROM entity_states s JOIN books b ON b.id = s.book_id "
+            "WHERE s.entity_id = ? AND b.series_order <= ? ORDER BY b.series_order DESC LIMIT 1", (entity_id, book_order))
+        if not r:
+            return None
+        return {"book_title": r["book_title"], "series_order": r["series_order"], "summary": r["summary"] or None,
+                **json.loads(r["snapshot_json"])}

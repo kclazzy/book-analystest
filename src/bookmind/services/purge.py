@@ -35,6 +35,18 @@ def purge_book_analysis(db: Database, book_id: str) -> None:
 
         # вопросы: раскрытые этой книгой возвращаются в «открыт»
         db.execute("DELETE FROM open_questions WHERE book_id = :b", p)
+        # статусы, изменённые этой книгой, возвращаются к значениям из журнала изменений
+        for qid in [r[0] for r in db.query(
+                f"SELECT DISTINCT owner_id FROM change_log WHERE owner_type = 'question' AND chunk_id IN {chunk_ids}", p)]:
+            old_status = db.one(
+                f"SELECT old_value FROM change_log WHERE owner_type = 'question' AND owner_id = :q AND field = 'status' "
+                f"AND chunk_id IN {chunk_ids} ORDER BY id LIMIT 1", {**p, "q": qid})
+            old_res = db.one(
+                f"SELECT old_value FROM change_log WHERE owner_type = 'question' AND owner_id = :q AND field = 'resolution' "
+                f"AND chunk_id IN {chunk_ids} ORDER BY id LIMIT 1", {**p, "q": qid})
+            if old_status:
+                db.execute("UPDATE open_questions SET status = ?, resolution = ?, resolved_chunk_id = NULL WHERE id = ?",
+                           (old_status["old_value"], (old_res["old_value"] if old_res else "") or "", qid))
         db.execute(f"UPDATE open_questions SET status = 'open', resolution = '', resolved_chunk_id = NULL "
                    f"WHERE resolved_chunk_id IN {chunk_ids}", p)
 

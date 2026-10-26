@@ -14,6 +14,7 @@ from bookmind.analysis.extractor import LLM, StructuredCaller
 from bookmind.analysis.models import load_chunk_ref
 from bookmind.analysis.deep_persister import DeepPersister
 from bookmind.analysis.persister import CorePersister
+from bookmind.analysis.series import SeriesMemory
 from bookmind.config import Settings
 from bookmind.domain.exceptions import (
     BookMindError, CancelledError, ModelNotInstalledError, SkipTask, ModelOutputError, OllamaRequestError, OllamaUnavailableError,
@@ -54,7 +55,7 @@ ProgressCb = Callable[[Progress], None]
 
 
 class AnalysisPipeline:
-    STAGES_ORDER: tuple[str, ...] = ("core", "deep", "chapter_summary", "arc_summary")
+    STAGES_ORDER: tuple[str, ...] = ("core", "deep", "chapter_summary", "arc_summary", "series")
     DEFAULT_STAGES: tuple[str, ...] = ("core",)
 
     def __init__(self, db: Database, llm: LLM, settings: Settings, data_dir: Path | None = None,
@@ -67,14 +68,17 @@ class AnalysisPipeline:
         self.context = ContextBuilder(db)
         self.core_persister = CorePersister(db)
         self.deep_persister = DeepPersister(db)
+        self.series = SeriesMemory(db, self.caller, self.prompts)
         self.handlers: dict[str, Callable[[Any, str, str], tuple[str, list[str], Callable[[], list[str]]]]] = {
-            "core": self._core, "deep": self._deep, "chapter_summary": self._chapter_summary, "arc_summary": self._arc_summary}
-        self.task_scope: dict[str, str] = {"core": "chunk", "deep": "chunk", "chapter_summary": "chapter", "arc_summary": "arc"}
+            "core": self._core, "deep": self._deep, "chapter_summary": self._chapter_summary, "arc_summary": self._arc_summary,
+            "series": self._series}
+        self.task_scope: dict[str, str] = {"core": "chunk", "deep": "chunk", "chapter_summary": "chapter", "arc_summary": "arc", "series": "series"}
 
     # ---- запуск/возобновление ----
     def prompt_version(self, stages: tuple[str, ...]) -> str:
-        names = {"core": "core_analysis", "deep": "deep_analysis", "chapter_summary": "chapter_summary", "arc_summary": "arc_summary"}
-        return self.prompts.version(*[names[s] for s in stages])
+        names = {"core": ("core_analysis",), "deep": ("deep_analysis",), "chapter_summary": ("chapter_summary",),
+                 "arc_summary": ("arc_summary",), "series": ("contradiction_check", "question_review")}
+        return self.prompts.version(*[n for s in stages for n in names[s]])
 
     def start(self, book_id: str, model: str, stages: tuple[str, ...] | None = None, replace: bool = False) -> str:
         stages = tuple(s for s in self.STAGES_ORDER if s in (stages or self.DEFAULT_STAGES))
@@ -108,6 +112,8 @@ class AnalysisPipeline:
             if self.task_scope.get(stage) == "chapter":
                 for ch in chapters:
                     self.tasks.ensure_task(run_id, stage, "chapter", ch["id"], ch["idx"])
+            elif self.task_scope.get(stage) == "series":
+                continue  # задачи создаются непосредственно перед этапом: нужны результаты предыдущих этапов
             elif self.task_scope.get(stage) == "arc":
                 size = max(1, self.settings.arc_size)
                 if len(chapters) > size:
@@ -137,6 +143,8 @@ class AnalysisPipeline:
 
         try:
             for stage in stages:
+                if self.task_scope.get(stage) == "series":
+                    self._ensure_series_tasks(run_id, book_id)
                 report(stage, "начало этапа")
                 for task in self.tasks.next_tasks(run_id, stage, self.settings.task_max_attempts):
                     if cancel.is_set():
@@ -186,6 +194,8 @@ class AnalysisPipeline:
         if task["scope_type"] == "chunk":
             loc = self.library.chunk_location(task["scope_id"])
             return (loc["chapter_title"], loc["idx"]) if loc else ("", 0)
+        if task["scope_type"] in ("entity", "question", "book"):
+            return ({"entity": "противоречия", "question": "пересмотр загадки", "book": "состояние героев"}[task["scope_type"]], task["seq"])
         if task["scope_type"] == "arc":
             return (f"арка {task['seq'] + 1}", task["seq"])
         ch = self.library.get_chapter(task["scope_id"])
@@ -270,6 +280,27 @@ class AnalysisPipeline:
             return []
 
         return raw, issues, apply
+
+    def _ensure_series_tasks(self, run_id: str, book_id: str) -> None:
+        sid = self.library.get_book(book_id)["series_id"]
+        for i, qid in enumerate(self.series.questions_to_review(book_id)):
+            self.tasks.ensure_task(run_id, "series", "question", qid, i)
+        for i, eid in enumerate(self.series.entities_with_pairs(sid)):
+            self.tasks.ensure_task(run_id, "series", "entity", eid, 1000 + i)
+        self.tasks.ensure_task(run_id, "series", "book", book_id, 10 ** 6)
+
+    def _series(self, task, model: str, run_id: str):
+        kind, scope = task["scope_type"], task["scope_id"]
+        if kind == "question":
+            return self.series.question_task(scope, self.tasks.get_run(run_id)["book_id"], model)
+        if kind == "entity":
+            return self.series.contradiction_task(scope, model)
+
+        def apply() -> list[str]:
+            self.series.snapshot_book(scope)
+            return []
+
+        return "", [], apply
 
     def _save_report(self, kind: str, book, scope_id: str, title: str, obj: ChapterSummary, run_id: str, model: str) -> None:
         from bookmind.storage.database import new_id, now_iso
