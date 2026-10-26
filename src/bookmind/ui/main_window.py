@@ -160,6 +160,8 @@ class MainWindow(QMainWindow):
 
     def error(self, text: str) -> None:
         self.log(f"ОШИБКА: {text}")
+        head, _, tb = text.partition("\n\n")
+        self.ctx.errors.record(head, source=self.tabs.tabText(self.tabs.currentIndex()) or "окно", tb=tb)
         QMessageBox.warning(self, "BookMind", text.split("\n\n")[0])
 
     def current_series(self) -> str | None:
@@ -355,6 +357,8 @@ class MainWindow(QMainWindow):
         msg = f"Анализ {names.get(summary.status, summary.status)}. {summary.message}"
         self.progress_label.setText(msg)
         self.log(msg)
+        if summary.status == "failed":
+            self.ctx.errors.record(msg, source="анализ", context={"counts": getattr(summary, "counts", "")})
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.refresh_library()
@@ -545,6 +549,8 @@ class MainWindow(QMainWindow):
 
     def _adapt_finished(self, s) -> None:
         self.log(f"Новая книга: {s.status}. {s.message}")
+        if s.status == "failed":
+            self.ctx.errors.record(f"Новая книга: {s.message}", source="новая книга", context={"проект": s.project_id})
         idx = self.ad_projects.findData(s.project_id)
         self.adapt_reload()
         self.ad_projects.setCurrentIndex(max(self.ad_projects.findData(s.project_id), 0))
@@ -667,6 +673,8 @@ class MainWindow(QMainWindow):
         if r.flagged:
             msg += f". Требуют внимания главы: {', '.join(str(i + 1) for i in r.flagged)}"
         self.log(msg)
+        if r.status == "failed":
+            self.ctx.errors.record(msg, source="новая книга", context={"проект": getattr(r, "project_id", "")})
         pid = getattr(r, "project_id", None)
         self.adapt_reload()
         if pid:
@@ -1183,6 +1191,115 @@ class MainWindow(QMainWindow):
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         self.tabs.addTab(self.log_view, "Журнал")
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        top = QHBoxLayout()
+        self.err_level = QComboBox()
+        self.err_level.addItem("Все ошибки и предупреждения", None)
+        self.err_level.addItem("Только ошибки", "ERROR")
+        self.err_level.addItem("Критические", "CRITICAL")
+        self.err_level.addItem("Предупреждения", "WARNING")
+        self.err_level.currentIndexChanged.connect(lambda _: self.errors_refresh())
+        top.addWidget(self.err_level)
+        self.err_btns = {}
+        for key, text, fn in (("refresh", "Обновить", self.errors_refresh), ("copy", "Копировать выбранную", self.errors_copy),
+                              ("report", "Сохранить отчёт для разработчика…", self.errors_report),
+                              ("folder", "Открыть папку журналов", self.errors_open_folder), ("clear", "Очистить", self.errors_clear)):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            self.err_btns[key] = b
+            top.addWidget(b)
+        top.addStretch()
+        lay.addLayout(top)
+        self.err_table = QTableWidget(0, 5)
+        self.err_table.setHorizontalHeaderLabels(["Время", "Уровень", "Где", "Сообщение", "Раз"])
+        self.err_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.err_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.err_table.horizontalHeader().setStretchLastSection(False)
+        self.err_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.err_detail = QPlainTextEdit()
+        self.err_detail.setReadOnly(True)
+        self.err_detail.setPlaceholderText("Выберите запись, чтобы увидеть подробности и трассировку.")
+        split = QSplitter(Qt.Vertical)
+        split.addWidget(self.err_table)
+        split.addWidget(self.err_detail)
+        lay.addWidget(split, 1)
+        self.err_table.itemSelectionChanged.connect(self._errors_show)
+        self._err_entries = []
+        self._err_seen = -1
+        self.tabs.addTab(w, "Ошибки")
+        self.err_tab = w
+        self.err_timer = QTimer(self)
+        self.err_timer.timeout.connect(self._errors_poll)
+        self.err_timer.start(3000)
+        self.errors_refresh()
+
+    def _errors_poll(self) -> None:
+        if self.ctx.errors.revision != self._err_seen:
+            self.errors_refresh()
+
+    def errors_refresh(self) -> None:
+        self._err_seen = self.ctx.errors.revision
+        self._err_entries = self.ctx.errors.entries(self.err_level.currentData(), limit=500)
+        names = {"WARNING": "предупреждение", "ERROR": "ошибка", "CRITICAL": "критическая"}
+        self.err_table.setRowCount(len(self._err_entries))
+        for r, e in enumerate(self._err_entries):
+            for c, v in enumerate([e.ts.replace("T", " "), names.get(e.level, e.level), e.source, e.title(), e.count if e.count > 1 else ""]):
+                self.err_table.setItem(r, c, QTableWidgetItem(str(v)))
+        self.err_table.resizeColumnToContents(0)
+        self.err_table.resizeColumnToContents(2)
+        total = self.ctx.errors.count()
+        idx = self.tabs.indexOf(self.err_tab)
+        self.tabs.setTabText(idx, f"Ошибки ({total})" if total else "Ошибки")
+        self.err_detail.clear()
+
+    def _errors_selected(self):
+        rows = self.err_table.selectionModel().selectedRows()
+        return self._err_entries[rows[0].row()] if rows and rows[0].row() < len(self._err_entries) else None
+
+    def _errors_text(self, e) -> str:
+        ctx = "".join(f"\n{k}: {v}" for k, v in e.context.items())
+        return (f"[{e.ts}] {e.level} · {e.source or '—'} · версия {e.version}" + (f" · повторов: {e.count}" if e.count > 1 else "")
+                + f"\n\n{e.message}{ctx}" + (f"\n\n{e.traceback}" if e.traceback else ""))
+
+    def _errors_show(self) -> None:
+        e = self._errors_selected()
+        if e:
+            self.err_detail.setPlainText(self._errors_text(e))
+
+    def errors_copy(self) -> None:
+        e = self._errors_selected()
+        if e:
+            QApplication.clipboard().setText(self._errors_text(e))
+            self.log("Запись скопирована в буфер обмена.")
+
+    def errors_report(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "Отчёт для разработчика", str(self.ctx.data_dir / "exports" / "bookmind_report.zip"), "ZIP (*.zip)")
+        if not path:
+            return
+        extra = {"Папка данных": self.ctx.data_dir, "Адрес Ollama": self.ctx.settings.ollama_host, "Выбранная модель": self.ctx.settings.selected_model or "—"}
+        try:
+            from bookmind.system.environment import check_environment
+            for c in check_environment(self.ctx.client, self.ctx.models, self.ctx.data_dir):
+                extra[f"Проверка: {c.title}"] = f"{c.level} {c.detail}"
+        except Exception as exc:      # noqa: BLE001 — отчёт важнее полноты проверки
+            extra["Проверка окружения"] = f"не удалось: {exc}"
+        try:
+            self.ctx.errors.export_report(Path(path), log_file=self.ctx.data_dir / "logs" / "bookmind.log", extra=extra)
+        except OSError as exc:
+            self.error(f"Не удалось сохранить отчёт: {exc}")
+            return
+        self.log(f"Отчёт сохранён: {path} (в нём нет текстов книг и базы данных)")
+
+    def errors_open_folder(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.ctx.data_dir / "logs")))
+
+    def errors_clear(self) -> None:
+        if QMessageBox.question(self, "Журнал ошибок", "Очистить журнал ошибок?") == QMessageBox.Yes:
+            self.ctx.errors.clear()
+            self.errors_refresh()
 
     def closeEvent(self, event) -> None:  # noqa: N802
         for t in (self.thread_analysis, self.thread_model):

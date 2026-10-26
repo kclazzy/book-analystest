@@ -28,6 +28,8 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication(argv if argv is not None else sys.argv)
     ctx = AppContext()
     _setup_logging(ctx.data_dir)
+    from bookmind.system.errorlog import install_hooks
+    install_hooks(ctx.errors)
     win = MainWindow(ctx)
     win.show()
     code = app.exec()

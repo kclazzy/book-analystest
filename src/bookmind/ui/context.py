@@ -21,6 +21,7 @@ from bookmind.services.qa import QAService
 from bookmind.services.reports import ReportService
 from bookmind.services.search import SearchIndex
 from bookmind.storage.database import Database
+from bookmind.system.errorlog import ErrorLog
 from bookmind.system.updater import Updater, launch_installer
 from bookmind.storage.repositories import LibraryRepo, TaskRepo
 
@@ -31,6 +32,8 @@ class AppContext:
         for sub in ("database", "books", "exports", "backups", "logs", "cache"):
             (self.data_dir / sub).mkdir(parents=True, exist_ok=True)
         self.settings = Settings.load(self.data_dir)
+        from bookmind import __version__
+        self.errors = ErrorLog(self.data_dir / "logs" / "errors.jsonl", __version__)
         self.client = client or OllamaClient(
             self.settings.ollama_host, self.settings.request_timeout_s, self.settings.connect_timeout_s,
             self.settings.max_retries, self.settings.max_concurrent_requests)

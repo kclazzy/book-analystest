@@ -323,3 +323,40 @@ def test_write_buttons_and_save_book(ctx, qapp, tmp_path, monkeypatch):
     wait(win.thread_adapt)
     assert all(win.ad_table.item(r, 5).text().startswith("готов") for r in range(8))
     win.close()
+
+
+def test_error_journal_tab_shows_filters_and_reports(ctx, qapp, tmp_path, monkeypatch):
+    import zipfile
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+    win = MainWindow(ctx)
+    idx = win.tabs.indexOf(win.err_tab)
+    assert win.tabs.tabText(idx) == "Ошибки" and win.err_table.rowCount() == 0
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: None)
+    win.error("Не удалось что-то сделать\n\nTraceback (most recent call last):\nValueError: x")
+    ctx.errors.record("мелочь", source="тест", level="WARNING")
+    win._errors_poll()
+    assert win.tabs.tabText(idx) == "Ошибки (2)" and win.err_table.rowCount() == 2
+    win.err_level.setCurrentIndex(win.err_level.findData("ERROR"))
+    assert win.err_table.rowCount() == 1
+    win.err_table.selectRow(0)
+    assert "Traceback" in win.err_detail.toPlainText() and "Не удалось что-то сделать" in win.err_detail.toPlainText()
+    win.errors_copy()
+    assert "ValueError: x" in QApplication.clipboard().text()
+    out = tmp_path / "rep.zip"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(out), ""))
+    win.errors_report()
+    with zipfile.ZipFile(out) as z:
+        assert "Проверка: " in z.read("system.txt").decode() and "Не удалось что-то сделать" in z.read("errors.txt").decode()
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    win.errors_clear()
+    assert win.err_table.rowCount() == 0 and win.tabs.tabText(idx) == "Ошибки"
+    win.close()
+
+
+def test_thread_failure_lands_in_error_journal(ctx, qapp, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: None)
+    win = MainWindow(ctx)
+    win._analysis_failed("Ollama упал\n\nTraceback: ...")
+    assert ctx.errors.entries()[0].message == "Ollama упал" and "Traceback" in ctx.errors.entries()[0].traceback
+    win.close()
