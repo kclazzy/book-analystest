@@ -369,3 +369,11 @@ DEEP[(B2, "Глава 3. Реестр")] = D(
 for (_b, _ch), _resp in CORE.items():
     SUMMARIES[(_b, _ch)] = {"summary": f"Сводка главы: {_resp['summary']}",
                             "key_points": [e["description"] for e in _resp["events"]][:3], "open_threads": []}
+
+
+def _noop(self) -> None:
+    pass
+
+
+ScriptedLLM.reset_cancel = _noop
+ScriptedLLM.close = _noop

@@ -20,6 +20,9 @@ dev = ["pytest>=8.0", "pytest-httpx>=0.30"]
 [project.scripts]
 bookmind-models = "bookmind.main:cli"
 
+[project.gui-scripts]
+bookmind = "bookmind.ui.app:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

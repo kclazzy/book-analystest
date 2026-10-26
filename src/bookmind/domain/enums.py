@@ -163,3 +163,8 @@ _LABELS = {
     "contradiction": "Противоречие", "retcon": "Реткон", "deception": "Обман",
     "change_of_circumstances": "Изменение обстоятельств", "consistent": "Согласуется", "unrelated": "Не связаны",
 }
+
+
+def label_of(value: str) -> str:
+    """Русская подпись для строкового значения перечисления (или само значение, если подписи нет)."""
+    return _LABELS.get(value, value) if value else ""
