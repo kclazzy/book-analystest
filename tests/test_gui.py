@@ -518,3 +518,32 @@ def test_review_empty_button_fixes_all_empty_chapters(ctx, qapp, tmp_path, monke
     win.review_empty()
     assert shown[-1] == "Пустых глав нет."
     win.close()
+
+
+def test_selecting_chapter_whose_plan_was_removed_does_not_crash(ctx, qapp, tmp_path):
+    """Регрессия: при переделке плана строка главы удаляется из базы, а в таблице она ещё выделена — было StopIteration."""
+    from bookmind.analysis.extractor import StructuredCaller
+    from bookmind.creation.schemas import AdaptParams
+    from bookmind.creation.service import AdaptationService
+    from bookmind.creation.writer import BookWriter
+    ctx.library.import_book(write_txt(tmp_path / "b.txt", BOOK1), title=BOOK1_TITLE)
+    p = ctx.pipeline()
+    assert p.run(p.start(ctx.repo.list_books()[0]["id"], MODEL, ("core", "chapter_summary"))).status == "completed"
+    ctx.adaptation = lambda: AdaptationService(ctx.db, StructuredCaller(ctx.llm, ctx.settings), ctx.settings, ctx.prompts)
+    ctx.writer = lambda: BookWriter(ctx.adaptation())
+    win = MainWindow(ctx)
+    t = AdaptThread(ctx, MODEL, None, win.current_series(), AdaptParams(seed=1, chapter_words=300), "Тест")
+    t.start()
+    wait(t)
+    win.adapt_reload()
+    pid = win.ad_projects.currentData()
+    win.ad_table.selectRow(2)
+    ctx.db.execute("DELETE FROM adaptation_chapters WHERE project_id = ? AND idx = 2", (pid,))      # как при переделке плана
+    win._adapt_show_chapter()
+    assert "ещё не составлен" in win.ad_detail.toPlainText()
+    win.adapt_refresh()                                                                             # таблица обновилась без падений
+    win.ad_table.selectRow(1)
+    win.ad_table.setRowCount(0)
+    win._adapt_show_chapter()
+    assert win._selected_chapter() is None
+    win.close()

@@ -506,22 +506,25 @@ class MainWindow(QMainWindow):
     def _adapt_show_chapter(self) -> None:
         rows = self.ad_table.selectionModel().selectedRows()
         pid = self.ad_projects.currentData()
-        if not rows or not pid:
+        item = self.ad_table.item(rows[0].row(), 0) if rows else None
+        if item is None or not pid:
             return
-        idx = int(self.ad_table.item(rows[0].row(), 0).text()) - 1
+        idx = int(item.text()) - 1
         svc = self.ctx.adaptation()
         plan = svc.plans(pid).get(idx)
-        rep = next(c for c in svc.report(pid)["chapters"] if c["idx"] == idx)
-        if plan:
-            lines = [plan.title, "", plan.summary, "", f"Точка зрения: {plan.pov}; место: {plan.location}", f"Цель: {plan.goal}",
-                     f"Конфликт: {plan.conflict}", f"Итог: {plan.outcome}", f"Крючок: {plan.hook}"]
-            lines += ["", "Замечания проверки:", *[f"  ⚠ {i}" for i in rep["issues"]]] if rep["issues"] else []
-            wr = self.ctx.writer()
-            text = wr.chapter_text(pid, idx)
-            if text:
-                lines += ["", "—" * 20, "ТЕКСТ ГЛАВЫ", "", text]
-                lines += ["", "Замечания к тексту:", *[f"  ⚠ {i}" for i in wr.issues(pid, idx)]] if wr.issues(pid, idx) else []
-            self.ad_detail.setPlainText("\n".join(lines))
+        rep = next((c for c in svc.report(pid)["chapters"] if c["idx"] == idx), None)
+        if plan is None or rep is None:        # глава в процессе переделки: строки в базе уже нет, а в таблице она ещё выделена
+            self.ad_detail.setPlainText(f"План главы {idx + 1} ещё не составлен или переделывается.")
+            return
+        lines = [plan.title, "", plan.summary, "", f"Точка зрения: {plan.pov}; место: {plan.location}", f"Цель: {plan.goal}",
+                 f"Конфликт: {plan.conflict}", f"Итог: {plan.outcome}", f"Крючок: {plan.hook}"]
+        lines += ["", "Замечания проверки:", *[f"  ⚠ {i}" for i in rep["issues"]]] if rep["issues"] else []
+        wr = self.ctx.writer()
+        text = wr.chapter_text(pid, idx)
+        if text:
+            lines += ["", "—" * 20, "ТЕКСТ ГЛАВЫ", "", text]
+            lines += ["", "Замечания к тексту:", *[f"  ⚠ {i}" for i in wr.issues(pid, idx)]] if wr.issues(pid, idx) else []
+        self.ad_detail.setPlainText("\n".join(lines))
 
     def _adapt_params(self) -> AdaptParams:
         return AdaptParams(divergence=self.ad_div.currentData(), chapters=self.ad_chapters.value() or None,
@@ -632,7 +635,8 @@ class MainWindow(QMainWindow):
 
     def _selected_chapter(self) -> int | None:
         rows = self.ad_table.selectionModel().selectedRows()
-        return int(self.ad_table.item(rows[0].row(), 0).text()) - 1 if rows else None
+        item = self.ad_table.item(rows[0].row(), 0) if rows else None
+        return int(item.text()) - 1 if item is not None else None
 
     def _write(self, chapters: list[int] | None, rewrite: bool = False) -> None:
         pid = self.ad_projects.currentData()
