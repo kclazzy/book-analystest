@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from bookmind.creation.originality import _shingles
 from bookmind.services.exports import ExportService
 from bookmind.storage.database import Database, now_iso
 
@@ -15,6 +16,9 @@ QUOTE_MODES = ("none", "limited")     # none — только пересказ �
 MAX_QUOTE_WORDS = 25                  # длиннее цитата обрезается
 QUOTE_SHARE = 0.015                   # все цитаты вместе — не больше этой доли текста книг
 MAX_QUOTES_PER_CHAPTER = 5
+VERBATIM_MIN_WORDS = 20               # короткие формулировки фактов проверке не подлежат: это не воспроизведение текста
+VERBATIM_SHARE = 0.4                  # доля 5-грамм текста, совпадающих с книгой, начиная с которой пересказ считается копией
+OMITTED = "(опущено: слишком близко к тексту книги)"
 CHARS_PER_WORD = 6.3                  # русский текст с пробелами, для оценки объёма книг
 
 PREAMBLE = ("Это досье по книгам, собранное программой BookMind. Все факты подтверждены цитатами из текста, "
@@ -74,6 +78,32 @@ class DossierService:
                                "WHERE b.series_id = ? AND b.series_order <= ?", (series_id, cap)) or 0
         return int(chars / CHARS_PER_WORD)
 
+    def _book_shingles(self, series_id: str, cap: int) -> set[int]:
+        out: set[int] = set()
+        for r in self.db.query("SELECT c.text FROM chunks c JOIN books b ON b.id = c.book_id WHERE b.series_id = ? AND b.series_order <= ?",
+                               (series_id, cap)):
+            out |= _shingles(r["text"])
+        return out
+
+    @staticmethod
+    def _drop_copies(node: Any, book: set[int], counter: list[int]) -> Any:
+        """Длинные тексты (сводки, описания), дословно повторяющие книгу, заменяются пометкой; считаем, сколько заменено."""
+        if isinstance(node, str):
+            if len(node.split()) >= VERBATIM_MIN_WORDS:
+                sh = _shingles(node)
+                if sh and len(sh & book) / len(sh) >= VERBATIM_SHARE:
+                    counter[0] += 1
+                    return OMITTED
+            return node
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k not in ("sources", "id", "quote"):
+                    node[k] = DossierService._drop_copies(v, book, counter)
+        elif isinstance(node, list):
+            for i, v in enumerate(node):
+                node[i] = DossierService._drop_copies(v, book, counter)
+        return node
+
     @staticmethod
     def _limit_sources(node: Any, mode: str, state: dict[str, Any]) -> None:
         """Заменяет сырые источники ссылками на место; цитаты оставляет только в режиме limited и в пределах бюджета."""
@@ -115,6 +145,9 @@ class DossierService:
         d["summaries"] = self.summaries(series_id, cap)
         d["completeness"] = self.completeness(series_id)
         d["quotes_mode"] = quotes
+        counter = [0]
+        self._drop_copies(d, self._book_shingles(series_id, cap), counter)
+        d["filtered"] = counter[0]
         state = {"done": {}, "per_chapter": {}, "left": int(self._source_words(series_id, cap) * QUOTE_SHARE)}
         self._limit_sources(d, quotes, state)
         return d
@@ -135,6 +168,8 @@ class DossierService:
         if d["up_to_book_order"] is not None:
             L += [f"> Только тома до №{d['up_to_book_order']} включительно (без спойлеров).", ""]
         L += ["## Книги", *[f"{b['series_order']}. {b['title']}" + (f" — {b['author']}" if b.get("author") else "") for b in d["books"]], ""]
+        if d.get("filtered"):
+            L += [f"> Исключено фрагментов, слишком близких к тексту книг: {d['filtered']} (заменены пометкой «{OMITTED[1:-1]}»).", ""]
         bad = [c for c in d["completeness"] if c["failed"] or c["pending"]]
         if bad:
             L += ["## Полнота данных", "Анализ этих книг завершён не полностью, часть сведений может отсутствовать:"]

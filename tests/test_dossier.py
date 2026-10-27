@@ -140,3 +140,34 @@ def test_unknown_quote_mode_is_rejected(world):
     qa, _, _, sid, _, _ = world
     with pytest.raises(ValueError, match="режим"):
         DossierService(qa.db).build(sid, quotes="all")
+
+
+# ---------- авторское право: пересказ не должен копировать текст ----------
+def _copy_from_book(db, words=30):
+    text = db.scalar("SELECT text FROM chunks ORDER BY rowid LIMIT 1")
+    return " ".join(text.split()[:words])
+
+
+def test_summary_copied_from_the_book_is_replaced_and_counted(world):
+    qa, _, _, sid, _, _ = world
+    db = qa.db
+    copied = _copy_from_book(db)
+    row = db.one("SELECT id FROM report_versions WHERE kind = 'chapter_summary' ORDER BY rowid LIMIT 1")
+    db.execute("UPDATE report_versions SET content = ? WHERE id = ?", ("Сводка главы: " + copied, row["id"]))
+    svc = DossierService(db)
+    d = svc.build(sid)
+    md = svc.to_markdown(d)
+    assert copied not in md and copied[:60] not in md
+    assert "опущено: слишком близко к тексту книги" in md and d["filtered"] >= 1
+    assert "Исключено фрагментов" in md                                       # пользователь видит, что фильтр сработал
+    assert md.count("Сводка главы:") == 0
+    assert "Мира сообщает больной сестре Лине" in md
+
+
+def test_short_statements_and_normal_summaries_are_kept(world):
+    qa, _, _, sid, _, _ = world
+    svc = DossierService(qa.db)
+    d = svc.build(sid)
+    md = svc.to_markdown(d)
+    assert d["filtered"] == 0 and "Исключено" not in md
+    assert "Мира спрятала ключ под половицей" in md                           # короткий факт, совпадающий с фразой книги, допустим
