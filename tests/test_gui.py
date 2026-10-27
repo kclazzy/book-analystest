@@ -408,3 +408,27 @@ def test_retry_failed_button(ctx, qapp, tmp_path, monkeypatch):
     win.retry_failed_analysis()
     assert shown[-1] == "Неудавшихся задач нет." and win.thread_analysis is None
     win.close()
+
+
+def test_dossier_buttons_save_files_and_copy(ctx, qapp, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+    res = ctx.library.import_book(write_txt(tmp_path / "b.txt", BOOK1), title=BOOK1_TITLE)
+    p = ctx.pipeline()
+    assert p.run(p.start(res.book_id, MODEL, ("core", "deep", "chapter_summary"))).status == "completed"
+    win = MainWindow(ctx)
+    out = tmp_path / "x" / "dossier.md"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(out), ""))
+    win.dossier_quotes.setChecked(False)
+    win.export_dossier("md")
+    text = out.read_text(encoding="utf-8")
+    assert text.startswith("# Досье") and "Цитаты:" not in text
+    win.dossier_parts.setValue(4)
+    win.export_dossier("md")
+    assert len(list(out.parent.glob("dossier_*of*.md"))) >= 2
+    jpath = tmp_path / "x" / "d.json"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(jpath), ""))
+    win.export_dossier("json")
+    assert jpath.exists()
+    win.copy_dossier()
+    assert QApplication.clipboard().text().startswith("# Досье")
+    win.close()

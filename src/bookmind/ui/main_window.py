@@ -19,6 +19,7 @@ from bookmind.system.environment import OLLAMA_DOWNLOAD_URL, blocking_problems, 
 from bookmind import __version__
 from bookmind.system.updater import is_frozen
 from bookmind.system import datadir
+from bookmind.services.dossier import DossierService, estimate_tokens
 from bookmind.workers.threads import (
     AdaptThread, AnalysisThread, AskThread, EnvThread, FullBookThread, ModelThread, UpdateCheckThread, UpdateDownloadThread, WriteThread,
 )
@@ -693,6 +694,11 @@ class MainWindow(QMainWindow):
             msg = {"completed": f"Написано глав: {r.written}", "paused": f"Остановлено. {r.message}", "failed": f"Ошибка. {r.message}"}.get(r.status, r.status)
         if r.flagged:
             msg += f". Требуют внимания главы: {', '.join(str(i + 1) for i in r.flagged)}"
+        for w_ in getattr(r, "warnings", []):
+            self.log("Внимание: " + w_)
+            self.ctx.errors.record(w_, source="полный конвейер", level="WARNING")
+        if getattr(r, "warnings", None):
+            msg += ". Есть предупреждения — см. вкладку «Ошибки»"
         self.log(msg)
         if r.status == "failed":
             self.ctx.errors.record(msg, source="новая книга", context={"проект": getattr(r, "project_id", "")})
@@ -807,6 +813,25 @@ class MainWindow(QMainWindow):
         row.addWidget(b)
         row.addStretch()
         lay.addLayout(row)
+        lay.addWidget(QLabel("Досье для нейросети: вся подтверждённая аналитика серии одним текстом (для чата или контекста другой модели):"))
+        drow = QHBoxLayout()
+        self.dossier_quotes = QCheckBox("с цитатами")
+        self.dossier_quotes.setChecked(True)
+        self.dossier_parts = QSpinBox()
+        self.dossier_parts.setRange(0, 1000)
+        self.dossier_parts.setSingleStep(10)
+        self.dossier_parts.setSpecialValueText("одним файлом")
+        self.dossier_parts.setSuffix(" тыс. знаков в части")
+        b = QPushButton("Выгрузить досье (Markdown)")
+        b.clicked.connect(lambda: self.export_dossier("md"))
+        b2 = QPushButton("Досье (JSON)")
+        b2.clicked.connect(lambda: self.export_dossier("json"))
+        b3 = QPushButton("Копировать в буфер")
+        b3.clicked.connect(self.copy_dossier)
+        for w_ in (self.dossier_quotes, self.dossier_parts, b, b2, b3):
+            drow.addWidget(w_)
+        drow.addStretch()
+        lay.addLayout(drow)
         lay.addWidget(QLabel("Резервные копии:"))
         row2 = QHBoxLayout()
         for text, fn in (("Создать копию…", self.make_backup), ("Восстановить из копии…", self.restore_backup)):
@@ -839,6 +864,34 @@ class MainWindow(QMainWindow):
                 self.log(f"Экспорт сохранён: {path}")
         except (BookMindError, OSError, ValueError) as exc:
             self.error(str(exc))
+
+    def export_dossier(self, fmt: str) -> None:
+        sid = self.current_series()
+        if not sid:
+            QMessageBox.information(self, "BookMind", "Сначала выберите серию.")
+            return
+        filt = "Markdown (*.md)" if fmt == "md" else "JSON (*.json)"
+        path, _ = QFileDialog.getSaveFileName(self, "Сохранить досье", str(self.ctx.data_dir / "exports" / f"dossier.{fmt}"), filt)
+        if not path:
+            return
+        try:
+            files = DossierService(self.ctx.db).export(sid, Path(path), fmt=fmt, max_chars=self.dossier_parts.value() * 1000,
+                                                       with_quotes=self.dossier_quotes.isChecked(), up_to_book_order=self.spoiler_limit())
+        except (BookMindError, OSError, ValueError) as exc:
+            self.error(str(exc))
+            return
+        size = sum(f.stat().st_size for f in files)
+        self.log(f"Досье сохранено: {len(files)} файл(ов), {files[0].parent} (около {int(size / 1.9 / 2.7 / 1000)} тыс. токенов)")
+
+    def copy_dossier(self) -> None:
+        sid = self.current_series()
+        if not sid:
+            QMessageBox.information(self, "BookMind", "Сначала выберите серию.")
+            return
+        svc = DossierService(self.ctx.db)
+        text = svc.to_markdown(svc.build(sid, self.dossier_quotes.isChecked(), self.spoiler_limit()))
+        QApplication.clipboard().setText(text)
+        self.log(f"Досье скопировано в буфер обмена: {len(text)} знаков, около {estimate_tokens(text)} токенов")
 
     def book_report(self) -> None:
         bid = self.selected_book()

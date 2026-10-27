@@ -225,3 +225,17 @@ def test_full_pipeline_empty_series(db, settings, model, data_dir):
     svc = AdaptationService(db, StructuredCaller(llm, settings), settings)
     r = run_full_book(AnalysisPipeline(db, llm, settings, data_dir), svc, BookWriter(svc), "nope", model)
     assert r.status == "failed" and "нет книг" in r.message
+
+
+def test_full_pipeline_continues_when_some_analysis_tasks_fail(db, book1, settings, model, data_dir, tmp_path):
+    from bookmind.creation.full import run_full_book
+    settings.parse_retries = 0
+    llm = ScriptedLLM()
+    llm.fail_plan = {n: "не json" for n in (2, 5, 6)}                      # три фрагмента основного анализа упали
+    pipe = AnalysisPipeline(db, llm, settings, data_dir)
+    svc = AdaptationService(db, StructuredCaller(llm, settings), settings)
+    sid_ = db.scalar("SELECT series_id FROM books WHERE id = ?", (book1.book_id,))
+    out = tmp_path / "partial.md"
+    r = run_full_book(pipe, svc, BookWriter(svc), sid_, model, AdaptParams(seed=2, chapter_words=300), export_path=out)
+    assert r.status == "completed" and out.exists()
+    assert len(r.warnings) == 1 and "неполным данным" in r.warnings[0] and "Повторить неудавшиеся" in r.warnings[0]
