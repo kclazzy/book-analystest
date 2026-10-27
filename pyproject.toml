@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bookmind-local"
-version = "0.6.2"
+version = "0.6.3"
 description = "BookMind Local: локальный анализ книг и серий с помощью Ollama и Qwen"
 readme = "README.md"
 requires-python = ">=3.11"

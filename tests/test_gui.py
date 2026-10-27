@@ -478,3 +478,43 @@ def test_replan_button_rebuilds_selected_chapter(ctx, qapp, tmp_path, monkeypatc
     wait(win.thread_adapt)
     assert win.ad_table.item(1, 2).text() == "готова"
     win.close()
+
+
+def test_review_empty_button_fixes_all_empty_chapters(ctx, qapp, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    from bookmind.analysis.extractor import StructuredCaller
+    from bookmind.creation.schemas import AdaptParams
+    from bookmind.creation.service import AdaptationService
+    from bookmind.creation.writer import BookWriter
+    ctx.library.import_book(write_txt(tmp_path / "b.txt", BOOK1), title=BOOK1_TITLE)
+    p = ctx.pipeline()
+    assert p.run(p.start(ctx.repo.list_books()[0]["id"], MODEL, ("core", "chapter_summary"))).status == "completed"
+    broken = {"on": True}
+
+    def handler(stage, prompt, default):
+        d = default(prompt)
+        if stage == "adapt_chapter" and broken["on"] and any(f"план главы {n} из" in prompt for n in (2, 5)):
+            d.update(summary="", goal="", conflict="", outcome="")
+        return d
+    ctx.llm.extra["adapt_handler"] = handler
+    ctx.adaptation = lambda: AdaptationService(ctx.db, StructuredCaller(ctx.llm, ctx.settings), ctx.settings, ctx.prompts)
+    ctx.writer = lambda: BookWriter(ctx.adaptation())
+    win = MainWindow(ctx)
+    asked, shown = [], []
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: shown.append(a[2]))
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: asked.append(a[2]) or QMessageBox.Yes)
+    win.review_empty()
+    assert shown == ["Сначала создайте проект и дождитесь плана глав."]
+    t = AdaptThread(ctx, MODEL, None, win.current_series(), AdaptParams(seed=1, chapter_words=300, max_replans=0), "Тест")
+    t.start()
+    wait(t)
+    win.adapt_reload()
+    assert [win.ad_table.item(r, 2).text() for r in (1, 4)] == ["требует внимания"] * 2
+    broken["on"] = False
+    win.review_empty()
+    assert "Главы без описания или названия: 2, 5" in asked[0]
+    wait(win.thread_adapt)
+    assert [win.ad_table.item(r, 2).text() for r in range(8)] == ["готова"] * 8
+    win.review_empty()
+    assert shown[-1] == "Пустых глав нет."
+    win.close()

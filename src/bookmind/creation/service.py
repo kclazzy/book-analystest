@@ -171,6 +171,23 @@ class AdaptationService:
             self.db.execute("DELETE FROM adaptation_chapters WHERE project_id = ? AND idx = ?", (pid, i))
         return self.run(pid, model, on_progress, cancel)
 
+    def empty_chapters(self, pid: str) -> list[int]:
+        """Главы (с 0) без пригодного описания или названия, а также главы, для которых плана нет совсем."""
+        sk = self.skeleton(pid)
+        if sk is None:
+            return []
+        plans = self.plans(pid)
+        return [i for i in range(sk[1].chapters)
+                if i not in plans or len(plans[i].summary.strip()) < 20 or not plans[i].title.strip()]
+
+    def replan_empty(self, pid: str, model: str, on_progress: ProgressCb | None = None,
+                     cancel: threading.Event | None = None) -> AdaptSummary:
+        """Пересматривает только пустые главы; если их нет, модель не вызывается."""
+        empty = self.empty_chapters(pid)
+        if not empty:
+            return self._summary(pid, "completed", "Пустых глав нет")
+        return self.replan(pid, model, empty, on_progress, cancel)
+
     def _summary(self, pid: str, status: str, msg: str) -> AdaptSummary:
         flagged = [r["idx"] for r in self.db.query(
             "SELECT idx FROM adaptation_chapters WHERE project_id = ? AND status = 'flagged' ORDER BY idx", (pid,))]

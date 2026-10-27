@@ -403,3 +403,41 @@ def test_replan_fixes_chapter_without_touching_others(db, sid, settings, model):
     assert svc.report(pid)["chapters"][2]["status"] == "ok" and svc.report(pid)["chapters"][2]["attempts"] == 1
     with pytest.raises(BookMindError, match="Нет такой главы"):
         svc.replan(pid, model, [99])
+
+
+def test_empty_chapters_are_found_and_replanned_in_one_go(db, sid, settings, model):
+    state = {"broken": {1, 4, 6}}
+
+    def handler(stage, prompt, default):
+        d = default(prompt)
+        if stage == "adapt_chapter":
+            n = int(__import__("re").search(r"план главы (\d+) из", prompt).group(1)) - 1
+            if n in state["broken"]:
+                d.update(summary="", goal="", conflict="", outcome="")
+                if n == 4:
+                    d["title"] = ""
+        return d
+    svc, llm = make(db, settings, handler)
+    pid = svc.create(sid, AdaptParams(seed=1, max_replans=0))
+    svc.run(pid, model)
+    assert svc.empty_chapters(pid) == [1, 4, 6]                      # пустое описание и пустое название
+    ok_before = {i: p.summary for i, p in svc.plans(pid).items() if i not in (1, 4, 6)}
+    calls = llm.count("adapt_chapter")
+    state["broken"] = set()
+    s = svc.replan_empty(pid, model)
+    assert s.flagged == [] and svc.empty_chapters(pid) == [] and llm.count("adapt_chapter") == calls + 3
+    assert {i: p.summary for i, p in svc.plans(pid).items() if i not in (1, 4, 6)} == ok_before
+    calls = llm.count("adapt_chapter")
+    s2 = svc.replan_empty(pid, model)                                # пустых нет — модель не вызывается
+    assert s2.status == "completed" and llm.count("adapt_chapter") == calls and "Пустых глав нет" in s2.message
+
+
+def test_chapters_with_only_a_flag_but_real_description_are_not_empty(db, sid, settings, model):
+    def handler(stage, prompt, default):
+        d = default(prompt)
+        if stage == "adapt_chapter" and "план главы 2 из" in prompt:
+            d["summary"] = "Тихон снова встречается с Эльдаром и обсуждает ключ от башни."          # имена оригинала: flagged, но описание есть
+        return d
+    svc, _ = make(db, settings, handler)
+    pid = svc.create(sid, AdaptParams(seed=1))
+    assert svc.run(pid, model).flagged == [1] and svc.empty_chapters(pid) == []

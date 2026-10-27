@@ -443,7 +443,7 @@ class MainWindow(QMainWindow):
             row.addWidget(b)
         lay.addLayout(row)
         row2 = QHBoxLayout()
-        for key, text, fn in (("replan", "Переделать план выбранной", self.replan_selected), ("write_sel", "Написать выбранную главу", self.write_selected), ("write_all", "Написать все главы", self.write_all),
+        for key, text, fn in (("review", "Пересмотреть пустые главы", self.review_empty), ("replan", "Переделать план выбранной", self.replan_selected), ("write_sel", "Написать выбранную главу", self.write_selected), ("write_all", "Написать все главы", self.write_all),
                               ("rewrite", "Переписать выбранную", self.rewrite_selected), ("export", "Сохранить книгу…", self.book_save),
                               ("full", "Создать книгу целиком", self.full_book)):
             b = QPushButton(text)
@@ -528,6 +528,23 @@ class MainWindow(QMainWindow):
                            genre=self.ad_genre.text().strip(), setting=self.ad_setting.text().strip(),
                            keep=[k for k, cb in self.ad_keep.items() if cb.isChecked()], pause_after_plan=self.ad_pause.isChecked(),
                            chapter_words=self.ad_words.value())
+
+    def review_empty(self) -> None:
+        pid = self.ad_projects.currentData()
+        if not pid:
+            QMessageBox.information(self, "BookMind", "Сначала создайте проект и дождитесь плана глав.")
+            return
+        empty = self.ctx.adaptation().empty_chapters(pid)
+        if not empty:
+            QMessageBox.information(self, "BookMind", "Пустых глав нет.")
+            return
+        wr = self.ctx.writer()
+        with_text = [i for i in empty if wr.chapter_text(pid, i)]
+        text = f"Главы без описания или названия: {', '.join(str(i + 1) for i in empty)}. Пересмотреть их план заново?"
+        if with_text:
+            text += f"\nНаписанный текст глав {', '.join(str(i + 1) for i in with_text)} будет удалён."
+        if QMessageBox.question(self, "Пересмотреть пустые главы", text) == QMessageBox.Yes:
+            self._adapt_start(pid, replan=empty)
 
     def replan_selected(self) -> None:
         pid, idx = self.ad_projects.currentData(), self._selected_chapter()
