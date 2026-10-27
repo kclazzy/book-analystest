@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from bookmind.creation.book_export import Book, BookChapter
+from bookmind.creation import qa
 from bookmind.creation.originality import Check
 from bookmind.creation.schemas import ChapterPlan
 from bookmind.creation.service import TRANSIENT, AdaptationService
@@ -147,7 +148,23 @@ class BookWriter:
             return self._summary(pid, "failed", written, f"Модель не вернула текст: {exc}")
         left = [i for i in plans if self._rows(pid).get(i, {}).get("text_status") not in ("ok", "flagged")]
         self.svc._save(pid, status="completed", stage="written" if not left else "writing")
+        if written:
+            self.check_book(pid)
         return self._summary(pid, "completed", written, "")
+
+    # ---------- проверка книги ----------
+    def check_book(self, pid: str) -> qa.BookReport:
+        """Проверяет всю книгу целиком (без модели) и сохраняет отчёт."""
+        params, plans = self.svc.params(pid), self.svc.plans(pid)
+        cast = self.svc.cast(pid)
+        texts = {i: r.get("text", "") for i, r in self._rows(pid).items() if r.get("text_status") in ("ok", "flagged")}
+        rep = qa.check_book(texts, plans, cast if cast else qa.Cast(members=[]), n_chapters=len(plans), target_words=params.chapter_words)
+        self.svc._save(pid, qa_json=json.dumps(rep.as_dict(), ensure_ascii=False))
+        return rep
+
+    def book_report(self, pid: str) -> qa.BookReport | None:
+        d = json.loads(self.svc._row(pid)["qa_json"] or "{}")
+        return qa.BookReport.from_dict(d) if d else None
 
     def _summary(self, pid: str, status: str, written: int, msg: str) -> WriteSummary:
         flagged = sorted(i for i, r in self._rows(pid).items() if r["text_status"] == "flagged")
@@ -187,7 +204,8 @@ class BookWriter:
 
     def _check(self, pid: str, text: str, params) -> tuple[list[str], Check]:
         chk = self.svc._corpus(pid).check(text, params.divergence, with_shingles=True)
-        return validate_prose(text, params.chapter_words) + chk.reasons, chk
+        critical = [f.message for f in qa.check_chapter(text, None, qa.Cast(members=[]), None) if f.severity == "error"]
+        return validate_prose(text, params.chapter_words) + critical + chk.reasons, chk
 
     def _store(self, pid, idx, text, status, parts, attempts, chk: Check | None, issues: list[str]) -> None:
         self.db.execute(
@@ -234,6 +252,7 @@ class BookWriter:
         if r is None:
             raise BookMindError("Глава не найдена")
         self._store(pid, idx, text, "flagged" if issues else "ok", self._parts_for(params.chapter_words), r["text_attempts"], chk, issues)
+        self.check_book(pid)
         return issues
 
     def issues(self, pid: str, idx: int) -> list[str]:

@@ -239,3 +239,34 @@ def test_full_pipeline_continues_when_some_analysis_tasks_fail(db, book1, settin
     r = run_full_book(pipe, svc, BookWriter(svc), sid_, model, AdaptParams(seed=2, chapter_words=300), export_path=out)
     assert r.status == "completed" and out.exists()
     assert len(r.warnings) == 1 and "неполным данным" in r.warnings[0] and "Повторить неудавшиеся" in r.warnings[0]
+
+
+def test_book_report_is_stored_after_writing_and_refreshed_on_edit(db, sid, settings, model):
+    svc, w, llm, pid = setup(db, sid, settings, model, words=500)
+    assert w.book_report(pid) is None
+    w.write(pid, model)
+    rep = w.book_report(pid)
+    assert rep is not None and rep.chapters_checked == 8 and rep.chapters_total == 8
+    w.update_text(pid, 0, "Короткий текст без конца и")
+    again = w.book_report(pid)
+    assert any(f.code == "truncated" and f.chapter == 0 for f in again.findings)
+    assert w.check_book(pid).errors
+
+
+def test_check_book_reports_missing_chapters(db, sid, settings, model):
+    svc, w, llm, pid = setup(db, sid, settings, model, words=500)
+    w.write(pid, model, chapters=[0, 1])
+    rep = w.check_book(pid)
+    assert {f.chapter for f in rep.findings if f.code == "missing_text"} == set(range(2, 8))
+
+
+def test_foreign_script_triggers_rewrite(db, sid, settings, model):
+    calls = []
+
+    def write(prompt, default):
+        calls.append(prompt)
+        return ("Вера Лунина шла по отсеку. 你好世界。 " if len(calls) == 1 else "Вера Лунина шла по отсеку. ") * 80
+
+    svc, w, llm, pid = setup(db, sid, settings, model, extra={"write_handler": write}, words=500)
+    w.write(pid, model, chapters=[0])
+    assert len(calls) >= 2 and any("иероглиф" in c or "другого письма" in c for c in calls[1:])

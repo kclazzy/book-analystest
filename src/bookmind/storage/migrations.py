@@ -447,11 +447,16 @@ ALTER TABLE adaptation_chapters ADD COLUMN text_attempts INTEGER NOT NULL DEFAUL
 ALTER TABLE adaptation_chapters ADD COLUMN text_check_json TEXT NOT NULL DEFAULT '{}';
 """
 
+MIGRATION_004 = """
+ALTER TABLE adaptation_projects ADD COLUMN qa_json TEXT NOT NULL DEFAULT '{}';
+"""
+
 # (версия, SQL-скрипт). Новые изменения схемы добавляются только новыми элементами.
 MIGRATIONS: list[tuple[int, str]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
     (3, MIGRATION_003),
+    (4, MIGRATION_004),
 ]
 
 
