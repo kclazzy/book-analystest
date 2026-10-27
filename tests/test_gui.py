@@ -440,3 +440,41 @@ def test_dossier_tab_shows_copyright_notice_and_modes(ctx, qapp):
     assert "личного использования" in text and "облач" in text
     assert [win.dossier_quotes.itemData(i) for i in range(win.dossier_quotes.count())] == ["none", "limited"]
     win.close()
+
+
+def test_replan_button_rebuilds_selected_chapter(ctx, qapp, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    from bookmind.analysis.extractor import StructuredCaller
+    from bookmind.creation.schemas import AdaptParams
+    from bookmind.creation.service import AdaptationService
+    from bookmind.creation.writer import BookWriter
+    ctx.library.import_book(write_txt(tmp_path / "b.txt", BOOK1), title=BOOK1_TITLE)
+    p = ctx.pipeline()
+    assert p.run(p.start(ctx.repo.list_books()[0]["id"], MODEL, ("core", "chapter_summary"))).status == "completed"
+    broken = {"on": True}
+
+    def handler(stage, prompt, default):
+        d = default(prompt)
+        if stage == "adapt_chapter" and "план главы 2 из" in prompt and broken["on"]:
+            d.update(summary="", goal="", conflict="", outcome="")
+        return d
+    ctx.llm.extra["adapt_handler"] = handler
+    ctx.adaptation = lambda: AdaptationService(ctx.db, StructuredCaller(ctx.llm, ctx.settings), ctx.settings, ctx.prompts)
+    ctx.writer = lambda: BookWriter(ctx.adaptation())
+    win = MainWindow(ctx)
+    t = AdaptThread(ctx, MODEL, None, win.current_series(), AdaptParams(seed=1, chapter_words=300, max_replans=1), "Тест")
+    t.start()
+    wait(t)
+    win.adapt_reload()
+    assert win.ad_table.item(1, 2).text() == "требует внимания"
+    broken["on"] = False
+    shown = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: shown.append(a[2]))
+    win.ad_table.clearSelection()
+    win.replan_selected()
+    assert shown == ["Выберите главу в таблице."]
+    win.ad_table.selectRow(1)
+    win.replan_selected()
+    wait(win.thread_adapt)
+    assert win.ad_table.item(1, 2).text() == "готова"
+    win.close()

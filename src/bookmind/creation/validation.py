@@ -53,6 +53,24 @@ def validate_chapter(plan: ChapterPlan, cast: Cast) -> list[str]:
     return out
 
 
+def fill_missing(plan: ChapterPlan, number: int) -> tuple[ChapterPlan, list[str]]:
+    """Последняя мера, когда модель не дала нужного после всех попыток: описание собирается из её же полей цели, конфликта и итога
+    (ничего не выдумывается), пустое название заменяется номером. Замечания сообщают об этом честно."""
+    notes: list[str] = []
+    plan = plan.model_copy()
+    if len(plan.summary.strip()) < 20:
+        composed = ". ".join(x.strip().rstrip(".") for x in (plan.goal, plan.conflict, plan.outcome) if x.strip())
+        if len(composed) >= 20:
+            plan.summary = composed + "."
+            notes.append("описание главы составлено из полей цели, конфликта и итога: модель не вернула описание")
+        else:
+            notes.append("пустое описание главы: модель не вернула ничего пригодного")
+    if not plan.title.strip():
+        plan.title = f"Глава {number}"
+        notes.append("название главы не задано моделью, подставлен номер")
+    return plan, notes
+
+
 def validate_global(plans: dict[int, ChapterPlan], asg: Assignment) -> dict[int, list[str]]:
     """Замечания по главам: непокрытые биты и нарушение порядка загадок."""
     issues: dict[int, list[str]] = {i: [] for i in range(asg.chapters)}

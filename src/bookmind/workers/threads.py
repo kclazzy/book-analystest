@@ -86,9 +86,11 @@ class AdaptThread(_Base):
     created = Signal(str)
     finished_run = Signal(object)
 
-    def __init__(self, ctx, model: str, project_id: str | None = None, series_id: str = "", params=None, title: str = ""):
+    def __init__(self, ctx, model: str, project_id: str | None = None, series_id: str = "", params=None, title: str = "",
+                 replan: list[int] | None = None):
         super().__init__()
         self.ctx, self.model, self.project_id, self.series_id, self.params, self.title = ctx, model, project_id, series_id, params, title
+        self.replan = replan
         self.cancel_event = threading.Event()
 
     def stop(self) -> None:
@@ -101,7 +103,11 @@ class AdaptThread(_Base):
         if self.project_id is None:
             self.project_id = svc.create(self.series_id, self.params, self.title)
             self.created.emit(self.project_id)
-        self.finished_run.emit(svc.run(self.project_id, self.model, on_progress=lambda p: self.progress.emit(p), cancel=self.cancel_event))
+        progress = lambda p: self.progress.emit(p)      # noqa: E731
+        if self.replan:
+            self.finished_run.emit(svc.replan(self.project_id, self.model, self.replan, on_progress=progress, cancel=self.cancel_event))
+        else:
+            self.finished_run.emit(svc.run(self.project_id, self.model, on_progress=progress, cancel=self.cancel_event))
 
 
 class WriteThread(_Base):

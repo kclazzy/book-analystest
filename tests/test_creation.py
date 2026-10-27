@@ -318,3 +318,88 @@ def test_creative_temperature_is_used(db, sid, settings, model):
     pid = svc.create(sid, AdaptParams(seed=1, chapters=3))
     svc.run(pid, model)
     assert captured and all(t == settings.creative_temperature for _, t in captured)
+
+
+# ---------- главы с пустым описанием ----------
+def _plan_handler(mutate, chapter=3):
+    def handler(stage, prompt, default):
+        d = default(prompt)
+        if stage == "adapt_chapter" and f"план главы {chapter} из" in prompt:
+            mutate(d)
+        return d
+    return handler
+
+
+def test_summary_under_another_key_is_not_lost(db, sid, settings, model):
+    def mutate(d):
+        d["description"] = d.pop("summary")
+        d["name"] = d.pop("title")
+    svc, llm = make(db, settings, _plan_handler(mutate))
+    pid = svc.create(sid, AdaptParams(seed=1))
+    assert svc.run(pid, model).status == "completed"
+    ch = svc.report(pid)["chapters"][2]
+    assert ch["status"] == "ok" and ch["attempts"] == 1 and len(ch["summary"]) > 20 and ch["title"] == "Отсек 3"
+    assert llm.count("adapt_chapter") == 8                                      # переделывать не пришлось
+
+
+def test_persistently_empty_summary_is_filled_from_plan_fields_and_flagged(db, sid, settings, model):
+    def mutate(d):
+        d["summary"] = ""
+        d["goal"], d["conflict"], d["outcome"] = "найти журнал", "нехватка кислорода", "журнал найден, но страницы вырваны"
+    svc, llm = make(db, settings, _plan_handler(mutate))
+    pid = svc.create(sid, AdaptParams(seed=1, max_replans=2))
+    s = svc.run(pid, model)
+    assert s.flagged == [2] and llm.count("adapt_chapter") == 8 + 2            # две переделки, потом сдались
+    ch = svc.report(pid)["chapters"][2]
+    assert ch["attempts"] == 3 and "найти журнал" in ch["summary"] and "нехватка кислорода" in ch["summary"]
+    assert any("составлено из полей" in i for i in ch["issues"])               # честно сказано, что описание не от модели
+    assert "найти журнал" in svc.bible_markdown(pid)
+
+
+def test_completely_empty_plan_gets_a_title_and_stays_flagged(db, sid, settings, model):
+    def mutate(d):
+        for k in list(d):
+            d[k] = [] if isinstance(d[k], list) else ""
+    svc, _ = make(db, settings, _plan_handler(mutate))
+    pid = svc.create(sid, AdaptParams(seed=1, max_replans=1))
+    s = svc.run(pid, model)
+    assert s.flagged == [2]
+    ch = svc.report(pid)["chapters"][2]
+    assert ch["title"] == "Глава 3" and ch["status"] == "flagged" and any("пустое описание" in i for i in ch["issues"])
+
+
+def test_premise_aliases(db, sid, settings, model):
+    def handler(stage, prompt, default):
+        d = default(prompt)
+        if stage == "adapt_premise":
+            d["premise"] = d.pop("logline")
+            d["conflict"] = d.pop("central_conflict")
+        return d
+    svc, llm = make(db, settings, handler)
+    pid = svc.create(sid, AdaptParams(seed=1))
+    svc.run(pid, model)
+    pr = svc.premise(pid)
+    assert pr.logline and pr.central_conflict and llm.count("adapt_premise") == 1
+
+
+def test_replan_fixes_chapter_without_touching_others(db, sid, settings, model):
+    state = {"broken": True}
+
+    def handler(stage, prompt, default):
+        d = default(prompt)
+        if stage == "adapt_chapter" and "план главы 3 из" in prompt and state["broken"]:
+            d["summary"] = ""
+            d["goal"] = d["conflict"] = d["outcome"] = ""
+        return d
+    svc, llm = make(db, settings, handler)
+    pid = svc.create(sid, AdaptParams(seed=1, max_replans=1))
+    assert svc.run(pid, model).flagged == [2]
+    before = {i: p.summary for i, p in svc.plans(pid).items() if i != 2}
+    calls = llm.count("adapt_chapter")
+    state["broken"] = False
+    s = svc.replan(pid, model, [2])
+    assert s.flagged == [] and llm.count("adapt_chapter") == calls + 1           # переделана только одна глава
+    assert len(svc.plans(pid)[2].summary) > 20 and {i: p.summary for i, p in svc.plans(pid).items() if i != 2} == before
+    assert svc.report(pid)["chapters"][2]["status"] == "ok" and svc.report(pid)["chapters"][2]["attempts"] == 1
+    with pytest.raises(BookMindError, match="Нет такой главы"):
+        svc.replan(pid, model, [99])

@@ -443,7 +443,7 @@ class MainWindow(QMainWindow):
             row.addWidget(b)
         lay.addLayout(row)
         row2 = QHBoxLayout()
-        for key, text, fn in (("write_sel", "Написать выбранную главу", self.write_selected), ("write_all", "Написать все главы", self.write_all),
+        for key, text, fn in (("replan", "Переделать план выбранной", self.replan_selected), ("write_sel", "Написать выбранную главу", self.write_selected), ("write_all", "Написать все главы", self.write_all),
                               ("rewrite", "Переписать выбранную", self.rewrite_selected), ("export", "Сохранить книгу…", self.book_save),
                               ("full", "Создать книгу целиком", self.full_book)):
             b = QPushButton(text)
@@ -529,7 +529,17 @@ class MainWindow(QMainWindow):
                            keep=[k for k, cb in self.ad_keep.items() if cb.isChecked()], pause_after_plan=self.ad_pause.isChecked(),
                            chapter_words=self.ad_words.value())
 
-    def _adapt_start(self, pid: str | None) -> None:
+    def replan_selected(self) -> None:
+        pid, idx = self.ad_projects.currentData(), self._selected_chapter()
+        if not pid or idx is None:
+            QMessageBox.information(self, "BookMind", "Выберите главу в таблице.")
+            return
+        if self.ctx.writer().chapter_text(pid, idx) and QMessageBox.question(
+                self, "Переделать план", "У этой главы уже есть написанный текст. После переделки плана он будет удалён. Продолжить?") != QMessageBox.Yes:
+            return
+        self._adapt_start(pid, replan=[idx])
+
+    def _adapt_start(self, pid: str | None, replan: list[int] | None = None) -> None:
         if self.thread_adapt and self.thread_adapt.isRunning():
             return
         sid = self.current_series()
@@ -543,7 +553,7 @@ class MainWindow(QMainWindow):
         except BookMindError as exc:
             self.error(str(exc))
             return
-        t = AdaptThread(self.ctx, model, pid, sid, None if pid else self._adapt_params(), "Новая книга по мотивам")
+        t = AdaptThread(self.ctx, model, pid, sid, None if pid else self._adapt_params(), "Новая книга по мотивам", replan)
         t.progress.connect(lambda p: self.ad_label.setText(f"{p.stage}: {p.done}/{p.total} {p.message}"))
         t.created.connect(lambda _: self.adapt_reload())
         t.finished_run.connect(self._adapt_finished)

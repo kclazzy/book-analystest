@@ -29,6 +29,11 @@ class AdaptParams(BaseModel):
 
 
 class Premise(_Base):
+    ALIASES = {"title": ("name", "book_title", "название"),
+               "logline": ("premise", "summary", "description", "synopsis", "pitch", "краткое описание", "описание", "завязка"),
+               "central_conflict": ("conflict", "main_conflict", "конфликт", "центральный конфликт"),
+               "setting": ("world", "world_setting", "мир", "место действия"), "tone": ("mood", "atmosphere", "тон", "атмосфера"),
+               "genre": ("жанр",)}
     title: str = ""
     logline: str = ""
     genre: str = ""
@@ -70,6 +75,12 @@ class Cast(_Base):
 
 
 class ChapterPlan(_Base):
+    ALIASES = {"title": ("name", "chapter_title", "chapter_name", "heading", "название", "заголовок"),
+               "summary": ("description", "synopsis", "content", "plot", "overview", "what_happens", "scene", "events",
+                           "содержание", "описание", "краткое содержание", "сюжет"),
+               "pov": ("point_of_view", "narrator", "точка зрения"), "location": ("setting", "place", "место"),
+               "goal": ("objective", "цель"), "conflict": ("obstacle", "obstacles", "конфликт", "препятствие"),
+               "outcome": ("result", "resolution", "итог", "результат"), "hook": ("cliffhanger", "ending", "крючок")}
     title: str = ""
     summary: str = ""
     pov: str = ""

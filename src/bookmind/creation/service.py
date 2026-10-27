@@ -159,6 +159,18 @@ class AdaptationService:
         self._save(pid, status="completed", stage="done")
         return self._summary(pid, "completed", "")
 
+    def replan(self, pid: str, model: str, chapters: list[int], on_progress: ProgressCb | None = None,
+               cancel: threading.Event | None = None) -> AdaptSummary:
+        """Переделывает план указанных глав (нумерация с 0), остальные главы, предпосылку и героев не трогает.
+        Написанный текст этих глав сбрасывается: он относился к старому плану."""
+        total = self.skeleton(pid)[1].chapters if self.skeleton(pid) else 0
+        bad = [i for i in chapters if not 0 <= i < total]
+        if bad:
+            raise BookMindError("Нет такой главы: " + ", ".join(str(i + 1) for i in bad))
+        for i in chapters:
+            self.db.execute("DELETE FROM adaptation_chapters WHERE project_id = ? AND idx = ?", (pid, i))
+        return self.run(pid, model, on_progress, cancel)
+
     def _summary(self, pid: str, status: str, msg: str) -> AdaptSummary:
         flagged = [r["idx"] for r in self.db.query(
             "SELECT idx FROM adaptation_chapters WHERE project_id = ? AND status = 'flagged' ORDER BY idx", (pid,))]
@@ -288,6 +300,10 @@ class AdaptationService:
             issues, chk = self._check_plan(pid, plan, params.divergence)
             plans[idx] = plan
             if not issues or attempts >= self._attempts(params):
+                if issues:
+                    plan, notes = val.fill_missing(plan, idx + 1)
+                    plans[idx] = plan
+                    issues = issues + notes
                 self._store_chapter(pid, idx, plan, "flagged" if issues else "ok", attempts, chk, issues)
                 return attempts
             self._store_chapter(pid, idx, plan, "pending", attempts, chk, issues)
