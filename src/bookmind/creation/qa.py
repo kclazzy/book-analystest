@@ -14,8 +14,8 @@ from bookmind.services.search import STOPWORDS, stem
 
 _WORD = re.compile(r"\w+", re.UNICODE)
 _FOREIGN = re.compile(r"[぀-ヿ㐀-䶿一-鿿가-힯؀-ۿ฀-๿]")
-_META_ANY = re.compile(r"как (?:языковая модель|ии\b|искусственный интеллект)|as an ai|language model|надеюсь, (?:эта|этот|вам|что)", re.I)
-_META_START = re.compile(r"^\s*(?:конечно|хорошо|разумеется|вот)[,!:.]\s", re.I)
+_META_ANY = re.compile(r"как (?:языковая модель|ии\b|искусственный интеллект)|as an ai|language model|надеюсь, (?:эта|этот|вам|что)", re.IGNORECASE)
+_META_START = re.compile(r"^\s*(?:конечно|хорошо|разумеется|вот)[,!:.]\s", re.IGNORECASE)
 _NAME = re.compile(r"(?<![\w])[А-ЯЁ][а-яё]{3,}")
 _END_OK = ".!?…»\"”)]*"
 _SENT = re.compile(r"(?<=[.!?…])\s+")
@@ -54,17 +54,20 @@ class BookReport:
         return [f for f in self.findings if f.severity == "warning"]
 
     def as_dict(self) -> dict[str, Any]:
-        return {"errors": len(self.errors), "warnings": len(self.warnings), "chapters_checked": self.chapters_checked,
-                "chapters_total": self.chapters_total, "findings": [asdict(f) for f in self.findings]}
+        return {
+            "errors": len(self.errors), "warnings": len(self.warnings), "chapters_checked": self.chapters_checked,
+            "chapters_total": self.chapters_total, "findings": [asdict(f) for f in self.findings],
+        }
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "BookReport":
+    def from_dict(cls, d: dict[str, Any]) -> BookReport:
         return cls([Finding(**f) for f in d.get("findings", [])], d.get("chapters_checked", 0), d.get("chapters_total", 0))
 
     def to_markdown(self, titles: dict[int, str] | None = None) -> str:
         titles = titles or {}
-        L = ["# Проверка книги", "", f"Проверено глав: {self.chapters_checked} из {self.chapters_total}. "
-             f"Всего ошибок: {len(self.errors)}, предупреждений: {len(self.warnings)}.", ""]
+        head = (f"Проверено глав: {self.chapters_checked} из {self.chapters_total}. "
+                f"Всего ошибок: {len(self.errors)}, предупреждений: {len(self.warnings)}.")
+        L = ["# Проверка книги", "", head, ""]
         if not self.findings:
             return "\n".join(L + ["Замечаний нет."]) + "\n"
         mark = {"error": "❌", "warning": "⚠"}
@@ -157,7 +160,6 @@ def check_book(texts: dict[int, str], plans: dict[int, ChapterPlan], cast: Cast,
     rep.chapters_checked = len(present)
     words = {i: len(_WORD.findall(t)) for i, t in present.items()}
     median = statistics.median(words.values()) if words else 0
-    target = target_words or (int(median) if median else None)
     for i in range(n_chapters):
         if i not in present:
             rep.findings.append(Finding("error", "missing_text", "текст главы не написан", i))

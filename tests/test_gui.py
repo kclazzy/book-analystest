@@ -322,6 +322,19 @@ def test_write_buttons_and_save_book(ctx, qapp, tmp_path, monkeypatch):
     win.write_all()
     wait(win.thread_adapt)
     assert all(win.ad_table.item(r, 5).text().startswith("готов") for r in range(8))
+    win.check_book()
+    assert "Проверка книги" in win.ad_detail.toPlainText() and "ошибок: 0" in win.ad_detail.toPlainText()
+    pid = win.ad_projects.currentData()
+    ctx.writer().update_text(pid, 1, "Текст оборван на середине и")
+    asked = []
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: asked.append(a[2]) or QMessageBox.No)
+    out2 = tmp_path / "bad.md"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(out2), ""))
+    win.book_save()
+    assert asked and "ошиб" in asked[0] and not out2.exists()
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    win.book_save()
+    assert out2.exists()
     win.close()
 
 

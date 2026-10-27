@@ -444,7 +444,7 @@ class MainWindow(QMainWindow):
         lay.addLayout(row)
         row2 = QHBoxLayout()
         for key, text, fn in (("review", "Пересмотреть пустые главы", self.review_empty), ("replan", "Переделать план выбранной", self.replan_selected), ("write_sel", "Написать выбранную главу", self.write_selected), ("write_all", "Написать все главы", self.write_all),
-                              ("rewrite", "Переписать выбранную", self.rewrite_selected), ("export", "Сохранить книгу…", self.book_save),
+                              ("rewrite", "Переписать выбранную", self.rewrite_selected), ("check", "Проверить книгу", self.check_book), ("export", "Сохранить книгу…", self.book_save),
                               ("full", "Создать книгу целиком", self.full_book)):
             b = QPushButton(text)
             b.clicked.connect(fn)
@@ -676,10 +676,26 @@ class MainWindow(QMainWindow):
             "EPUB (*.epub);;FictionBook (*.fb2);;Markdown (*.md);;Текст (*.txt)")
         return path
 
+    def check_book(self) -> None:
+        pid = self.ad_projects.currentData()
+        if not pid:
+            return
+        wr = self.ctx.writer()
+        rep = wr.check_book(pid)
+        titles = {c["idx"]: c["title"] for c in self.ctx.adaptation().report(pid)["chapters"]}
+        self.ad_detail.setMarkdown(rep.to_markdown(titles))
+        self.log(f"Проверка книги: ошибок — {len(rep.errors)}, предупреждений — {len(rep.warnings)}")
+
     def book_save(self) -> None:
         from bookmind.creation.book_export import export_book
         pid = self.ad_projects.currentData()
         if not pid:
+            return
+        rep = self.ctx.writer().book_report(pid)
+        bad = [f for f in rep.errors if f.code != "missing_text"] if rep else []
+        if bad and QMessageBox.question(
+                self, "Сохранить книгу", f"В тексте найдены ошибки ({len(bad)}): обрывы, иероглифы или зацикливание. "
+                "Нажмите «Проверить книгу», чтобы увидеть, где. Сохранить всё равно?") != QMessageBox.Yes:
             return
         path = self._ask_book_path()
         if path:

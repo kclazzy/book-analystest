@@ -31,6 +31,8 @@ class FullResult:
     flagged: list[int] = field(default_factory=list)
     message: str = ""
     warnings: list[str] = field(default_factory=list)
+    qa_errors: int = 0
+    qa_warnings: int = 0
 
 
 def run_full_book(pipeline, adaptation: AdaptationService, writer: BookWriter, series_id: str, model: str,
@@ -81,9 +83,13 @@ def run_full_book(pipeline, adaptation: AdaptationService, writer: BookWriter, s
     if ws.status != "completed":
         return FullResult(ws.status, project_id, flagged=ws.flagged, message=ws.message, warnings=warnings)
 
+    rep = writer.book_report(project_id) or writer.check_book(project_id)
+    if rep.errors:
+        warnings.append(f"Проверка книги: ошибок — {len(rep.errors)}, замечаний — {len(rep.warnings)}. Откройте «Проверить книгу», чтобы увидеть, где именно.")
+
     # 4. файл
     path = None
     if export_path:
         say(FullProgress("export", f"сохраняю книгу: {export_path}"))
         path = export_book(writer.book(project_id), Path(export_path))
-    return FullResult("completed", project_id, path, ws.flagged, warnings=warnings)
+    return FullResult("completed", project_id, path, ws.flagged, warnings=warnings, qa_errors=len(rep.errors), qa_warnings=len(rep.warnings))

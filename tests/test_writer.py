@@ -194,6 +194,7 @@ def test_full_pipeline_from_imported_book_to_epub(db, book1, settings, model, da
     r = run_full_book(pipe, svc, w, sid_, model, AdaptParams(seed=3, chapter_words=300, pause_after_plan=True), export_path=out,
                       on_progress=lambda p: seen.append(p.phase))
     assert r.status == "completed" and r.path == out and out.exists() and r.flagged == []
+    assert r.qa_errors == 0 and r.qa_warnings > 0          # шаблонный текст заглушки честно получает замечания о повторах
     assert [p for i, p in enumerate(seen) if i == 0 or seen[i - 1] != p] == ["analysis", "plan", "write", "export"]
     assert llm.count("core") > 0 and llm.count("write_part") == 8
     parsed = parse_epub(out)
