@@ -75,34 +75,69 @@ class AnalysisPipeline:
         self.task_scope: dict[str, str] = {"core": "chunk", "deep": "chunk", "chapter_summary": "chapter", "arc_summary": "arc", "series": "series"}
 
     # ---- запуск/возобновление ----
+    PROMPT_NAMES = {"core": ("core_analysis",), "deep": ("deep_analysis",), "chapter_summary": ("chapter_summary",),
+                    "arc_summary": ("arc_summary",), "series": ("contradiction_check", "question_review")}
+
+    def stage_version(self, stage: str) -> str:
+        return self.prompts.version(*self.PROMPT_NAMES[stage])
+
     def prompt_version(self, stages: tuple[str, ...]) -> str:
-        names = {"core": ("core_analysis",), "deep": ("deep_analysis",), "chapter_summary": ("chapter_summary",),
-                 "arc_summary": ("arc_summary",), "series": ("contradiction_check", "question_review")}
-        return self.prompts.version(*[n for s in stages for n in names[s]])
+        return self.prompts.version(*[n for s in stages for n in self.PROMPT_NAMES[s]])
+
+    def _normalize(self, stages) -> tuple[str, ...]:
+        return tuple(s for s in self.STAGES_ORDER if s in (stages or self.DEFAULT_STAGES))
+
+    def _reusable(self, run, stages: tuple[str, ...]):
+        """Можно ли продолжить существующий запуск этой книги и модели, добавив недостающие этапы.
+        Возвращает (запуск, объединённые этапы, версии промптов по этапам) или None, если промпты уже выполненных этапов изменились."""
+        if run is None:
+            return None
+        pj = json.loads(run["params_json"])
+        old = tuple(pj.get("stages", ["core"]))
+        old_v = pj.get("stage_versions")
+        if old_v is None:      # запуск создан старой версией: версия промптов хранилась только для всего набора этапов
+            if run["prompt_version"] != self.prompt_version(self._normalize(old)):
+                return None
+            old_v = {s: self.stage_version(s) for s in old}
+        if any(old_v.get(s) != self.stage_version(s) for s in stages if s in old):
+            return None
+        merged = self._normalize(set(old) | set(stages))
+        versions = {**old_v, **{s: self.stage_version(s) for s in merged if s not in old_v}}
+        return run, merged, versions
+
+    def can_continue(self, book_id: str, model: str, stages: tuple[str, ...] | None = None) -> bool:
+        """True — анализ можно начать или продолжить без замены результатов."""
+        if not self.library.has_analysis(book_id):
+            return True
+        return self._reusable(self.tasks.latest_run(book_id, model), self._normalize(stages)) is not None
 
     def start(self, book_id: str, model: str, stages: tuple[str, ...] | None = None, replace: bool = False) -> str:
-        stages = tuple(s for s in self.STAGES_ORDER if s in (stages or self.DEFAULT_STAGES))
+        stages = self._normalize(stages)
         if self.library.get_book(book_id) is None:
             raise BookMindError("Книга не найдена")
-        version = self.prompt_version(stages)
-        params = {"num_ctx": self.settings.num_ctx, "num_predict": self.settings.num_predict,
-                  "chunk_chars": [self.settings.chunk_chars_min, self.settings.chunk_chars_max], "stages": list(stages)}
         with self.db.transaction():
-            run = self.tasks.find_run(book_id, model, version)
-            if run is not None and not replace and run["status"] != "completed":
+            reuse = None if replace else self._reusable(self.tasks.latest_run(book_id, model), stages)
+            if reuse is not None:
+                run, merged, versions = reuse
                 run_id = run["id"]
-                self.tasks.reset_interrupted(run_id)
-                self.tasks.set_run_status(run_id, "running")
-            elif run is not None and not replace:
-                run_id = run["id"]
+                added = [s for s in merged if s not in json.loads(run["params_json"]).get("stages", ["core"])]
+                pj = {**json.loads(run["params_json"]), "stages": list(merged), "stage_versions": versions}
+                self.tasks.update_run_params(run_id, pj, self.prompt_version(merged))
+                if run["status"] != "completed" or added:
+                    self.tasks.reset_interrupted(run_id)
+                    self.tasks.set_run_status(run_id, "running")
+                self._ensure_tasks(run_id, book_id, merged)
             else:
                 if self.library.has_analysis(book_id):
                     if not replace:
                         raise BookMindError("Книга уже анализировалась другой моделью или версией промптов. "
                                             "Чтобы начать заново, подтвердите замену результатов.")
                     purge_book_analysis(self.db, book_id)
-                run_id = self.tasks.create_run(book_id, model, version, params)
-            self._ensure_tasks(run_id, book_id, stages)
+                params = {"num_ctx": self.settings.num_ctx, "num_predict": self.settings.num_predict,
+                          "chunk_chars": [self.settings.chunk_chars_min, self.settings.chunk_chars_max], "stages": list(stages),
+                          "stage_versions": {s: self.stage_version(s) for s in stages}}
+                run_id = self.tasks.create_run(book_id, model, self.prompt_version(stages), params)
+                self._ensure_tasks(run_id, book_id, stages)
         return run_id
 
     def _ensure_tasks(self, run_id: str, book_id: str, stages: tuple[str, ...]) -> None:

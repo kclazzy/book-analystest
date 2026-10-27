@@ -167,3 +167,62 @@ def test_editing_chapters_after_analysis_requires_purge(pipeline, library, book1
     library.rename_chapter(book1.book_id, 0, "Новое имя", purge_analysis=True)
     assert db.scalar("SELECT COUNT(*) FROM analysis_runs") == 0 and db.scalar("SELECT COUNT(*) FROM facts") == 0
     assert db.scalar("SELECT COUNT(*) FROM entities") == 0
+
+
+def test_adding_stages_continues_same_run_without_replace(pipeline, book1, model, db, llm):
+    r1 = pipeline.start(book1.book_id, model, ("core",))
+    assert pipeline.run(r1).status == "completed"
+    facts = db.scalar("SELECT COUNT(*) FROM facts")
+    core_calls = len(llm.calls)
+    assert pipeline.can_continue(book1.book_id, model, ("core", "deep", "chapter_summary"))
+    r2 = pipeline.start(book1.book_id, model, ("core", "deep", "chapter_summary"))
+    assert r2 == r1                                                      # тот же запуск, замены нет
+    s = pipeline.run(r2)
+    assert s.status == "completed" and s.counts["deep"]["done"] > 0 and s.counts["chapter_summary"]["done"] > 0
+    assert len(llm.calls) > core_calls and db.scalar("SELECT COUNT(*) FROM facts") == facts      # core не пересчитывался
+    assert sum(1 for stage, _ in llm.calls if stage == "core") == 8
+    # повторный запуск того же набора этапов ничего не делает
+    n = len(llm.calls)
+    assert pipeline.start(book1.book_id, model, ("core", "deep", "chapter_summary")) == r1
+    assert pipeline.run(r1).status == "completed" and len(llm.calls) == n
+    # подмножество уже выполненного тоже не требует замены
+    assert pipeline.can_continue(book1.book_id, model, ("deep",))
+
+
+def test_stage_added_later_in_separate_runs_of_the_app(book1, model, db, llm, settings, data_dir):
+    p1 = AnalysisPipeline(db, llm, settings, data_dir)
+    rid = p1.start(book1.book_id, model, ("core", "deep"))
+    p1.run(rid)
+    p2 = AnalysisPipeline(db, llm, settings, data_dir)              # «перезапуск программы»
+    assert p2.start(book1.book_id, model, ("chapter_summary",)) == rid
+    assert p2.run(rid).status == "completed"
+    import json
+    assert json.loads(p2.tasks.get_run(rid)["params_json"])["stages"] == ["core", "deep", "chapter_summary"]
+
+
+def test_other_model_or_changed_prompt_of_finished_stage_still_needs_replace(pipeline, book1, model, db, settings, data_dir):
+    rid = pipeline.start(book1.book_id, model, ("core",))
+    pipeline.run(rid)
+    assert not pipeline.can_continue(book1.book_id, "qwen3:8b", ("core",))
+    with pytest.raises(BookMindError, match="подтвердите замену"):
+        pipeline.start(book1.book_id, "qwen3:8b", ("core",))
+    (data_dir / "prompts").mkdir()
+    (data_dir / "prompts" / "core_analysis.md").write_text("Другой промпт\n{{text}}", encoding="utf-8")
+    from bookmind.llm.prompts import PromptStore
+    changed = AnalysisPipeline(db, ScriptedLLM(), settings, data_dir, PromptStore(data_dir))
+    assert not changed.can_continue(book1.book_id, model, ("core", "deep"))
+    # изменение промпта этапа, который ещё не выполнялся, не мешает: deep ещё не запускался
+    (data_dir / "prompts" / "core_analysis.md").unlink()
+    (data_dir / "prompts" / "deep_analysis.md").write_text("Другой deep\n{{text}}", encoding="utf-8")
+    deep_changed = AnalysisPipeline(db, ScriptedLLM(), settings, data_dir, PromptStore(data_dir))
+    assert deep_changed.can_continue(book1.book_id, model, ("core", "deep"))
+
+
+def test_legacy_run_without_stage_versions_is_still_reused(pipeline, book1, model, db):
+    rid = pipeline.start(book1.book_id, model, ("core",))
+    pipeline.run(rid)
+    import json
+    pj = json.loads(pipeline.tasks.get_run(rid)["params_json"])
+    pj.pop("stage_versions")
+    pipeline.tasks.update_run_params(rid, pj, pipeline.prompt_version(("core",)))       # как в версиях до исправления
+    assert pipeline.start(book1.book_id, model, ("core", "deep")) == rid

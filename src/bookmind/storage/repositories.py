@@ -102,6 +102,13 @@ class TaskRepo:
             "SELECT * FROM analysis_runs WHERE book_id = ? AND model = ? AND prompt_version = ? "
             "ORDER BY started_at DESC LIMIT 1", (book_id, model, prompt_version))
 
+    def latest_run(self, book_id: str, model: str) -> sqlite3.Row | None:
+        return self.db.one("SELECT * FROM analysis_runs WHERE book_id = ? AND model = ? ORDER BY started_at DESC LIMIT 1", (book_id, model))
+
+    def update_run_params(self, run_id: str, params: dict[str, Any], prompt_version: str) -> None:
+        self.db.execute("UPDATE analysis_runs SET params_json = ?, prompt_version = ? WHERE id = ?",
+                        (json.dumps(params, ensure_ascii=False), prompt_version, run_id))
+
     def runs_of(self, book_id: str) -> list[sqlite3.Row]:
         return self.db.query("SELECT * FROM analysis_runs WHERE book_id = ? ORDER BY started_at DESC", (book_id,))
 

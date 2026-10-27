@@ -325,13 +325,12 @@ class MainWindow(QMainWindow):
             self.error(f"{exc}\nУстановите модель на вкладке «Модели».")
             return
         replace = False
-        if self.ctx.repo.has_analysis(bid):
-            run = self.ctx.pipeline().tasks.find_run(bid, model, self.ctx.pipeline().prompt_version(stages))
-            if run is None:
-                replace = QMessageBox.question(self, "Повторный анализ",
-                    "Книга уже анализировалась другой моделью или версией промптов. Заменить результаты?") == QMessageBox.Yes
-                if not replace:
-                    return
+        if not self.ctx.pipeline().can_continue(bid, model, stages):
+            replace = QMessageBox.question(self, "Повторный анализ",
+                "Эта книга уже анализировалась другой моделью или с изменёнными промптами, поэтому продолжить нельзя. "
+                "Заменить прежние результаты новым анализом?") == QMessageBox.Yes
+            if not replace:
+                return
         t = AnalysisThread(self.ctx, bid, model, stages, replace)
         t.progress.connect(self._on_progress)
         t.finished_run.connect(self._on_finished)
