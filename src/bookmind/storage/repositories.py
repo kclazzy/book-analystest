@@ -126,6 +126,11 @@ class TaskRepo:
         cur = self.db.execute("UPDATE analysis_tasks SET status = 'pending' WHERE run_id = ? AND status = 'running'", (run_id,))
         return cur.rowcount
 
+    def reset_failed(self, run_id: str) -> int:
+        """Явное «продолжить» даёт упавшим задачам новые попытки."""
+        cur = self.db.execute("UPDATE analysis_tasks SET status = 'pending', attempts = 0 WHERE run_id = ? AND status = 'failed'", (run_id,))
+        return cur.rowcount
+
     def next_tasks(self, run_id: str, stage: str, max_attempts: int) -> list[sqlite3.Row]:
         return self.db.query(
             "SELECT * FROM analysis_tasks WHERE run_id = ? AND stage = ? AND "

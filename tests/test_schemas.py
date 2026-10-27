@@ -42,3 +42,29 @@ def test_inline_schema_has_no_refs():
     schema = inline_schema(CoreAnalysis)
     assert "$ref" not in json.dumps(schema) and "$defs" not in schema
     assert "enum" in json.dumps(schema)
+
+
+# ---------- устойчивость глубокого анализа к неточным ответам модели ----------
+def test_threads_without_title_use_alternative_keys_or_are_skipped():
+    from bookmind.llm.json_parser import parse_model_json
+    from bookmind.domain.schemas import DeepAnalysis
+    raw = ('{"plot_threads": [{"name": "Расследование убийства", "description": "Мира ищет убийцу"}, '
+           '{"thread": "Болезнь Лины"}, "Тайна ключа", {"description": "без названия, но с текстом"}, {"status": "open"}, 42],'
+           ' "goals": [{"goal": "найти убийцу", "name": "Мира"}], "questions": [{"question": "Кто убил Аларика?"}],'
+           ' "motifs": [{"motif": "огонь"}], "relationships": [{"a": "Мира", "b": "Лина", "type": "сестра"}]}')
+    deep, issues = parse_model_json(raw, DeepAnalysis)
+    assert [t.title for t in deep.plot_threads] == ["Расследование убийства", "Болезнь Лины", "Тайна ключа"]
+    assert deep.plot_threads[0].description == "Мира ищет убийцу"
+    assert deep.goals[0].character == "Мира" and deep.goals[0].description == "найти убийцу"
+    assert deep.questions[0].text == "Кто убил Аларика?" and deep.motifs[0].name == "огонь" and deep.relationships[0].rel_type == "сестра"
+    skipped = [i for i in issues if "пропущен" in i]
+    assert len(skipped) == 3 and any("plot_threads[3]" in i for i in skipped) and any("plot_threads[5]" in i for i in skipped)
+
+
+def test_wrong_container_types_do_not_crash_deep_analysis():
+    from bookmind.llm.json_parser import parse_model_json
+    from bookmind.domain.schemas import DeepAnalysis
+    deep, issues = parse_model_json('{"plot_threads": "нет", "goals": {"character": "Мира", "description": "цель"}, "motifs": null}', DeepAnalysis)
+    assert deep.plot_threads == [] and len(deep.goals) == 1 and deep.motifs == [] and any("ожидался список" in i for i in issues)
+    clean, issues2 = parse_model_json('{"goals": []}', DeepAnalysis)
+    assert issues2 == [] and clean.dropped == []

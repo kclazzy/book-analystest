@@ -111,6 +111,16 @@ class AnalysisPipeline:
             return True
         return self._reusable(self.tasks.latest_run(book_id, model), self._normalize(stages)) is not None
 
+    def retry_failed(self, book_id: str, model: str) -> int:
+        """Явное «повторить неудавшиеся»: задачам, исчерпавшим попытки, даются новые. Возвращает их число."""
+        run = self.tasks.latest_run(book_id, model)
+        if run is None:
+            return 0
+        n = self.tasks.reset_failed(run["id"])
+        if n:
+            self.tasks.set_run_status(run["id"], "paused")
+        return n
+
     def start(self, book_id: str, model: str, stages: tuple[str, ...] | None = None, replace: bool = False) -> str:
         stages = self._normalize(stages)
         if self.library.get_book(book_id) is None:

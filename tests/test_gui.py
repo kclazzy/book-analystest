@@ -393,3 +393,18 @@ def test_changing_folder_asks_about_transfer(ctx, qapp, tmp_path, monkeypatch):
     pick(tmp_path / "t3", "use")                                    # в t3 уже есть данные — спрашивает про использование
     assert asked == [(True, True)] and config.read_pointer() == tmp_path / "t3"
     win.close()
+
+
+def test_retry_failed_button(ctx, qapp, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    ctx.library.import_book(write_txt(tmp_path / "b.txt", BOOK1), title=BOOK1_TITLE)
+    win = MainWindow(ctx)
+    win.refresh_library()
+    shown = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: shown.append(a[2]))
+    win.retry_failed_analysis()
+    assert shown == ["Выберите книгу в таблице."]
+    win.books_table.selectRow(0)
+    win.retry_failed_analysis()
+    assert shown[-1] == "Неудавшихся задач нет." and win.thread_analysis is None
+    win.close()

@@ -226,3 +226,20 @@ def test_legacy_run_without_stage_versions_is_still_reused(pipeline, book1, mode
     pj.pop("stage_versions")
     pipeline.tasks.update_run_params(rid, pj, pipeline.prompt_version(("core",)))       # как в версиях до исправления
     assert pipeline.start(book1.book_id, model, ("core", "deep")) == rid
+
+
+def test_retry_failed_gives_exhausted_tasks_new_attempts(pipeline, book1, model, db, llm, settings):
+    settings.parse_retries = 0
+    llm.fail_plan = {n: "не json" for n in range(1, 60)}                   # всё падает
+    rid = pipeline.start(book1.book_id, model, ("core",))
+    for _ in range(settings.task_max_attempts):
+        s = pipeline.run(rid)
+    assert s.status == "failed" and db.scalar("SELECT COUNT(*) FROM analysis_tasks WHERE status = 'failed'") == 8
+    n = len(llm.calls)
+    pipeline.start(book1.book_id, model, ("core",))
+    pipeline.run(rid)
+    assert len(llm.calls) == n                                              # обычное «продолжить» исчерпанное не трогает
+    llm.fail_plan = {}
+    assert pipeline.retry_failed(book1.book_id, model) == 8 and pipeline.retry_failed("нет", model) == 0
+    assert pipeline.start(book1.book_id, model, ("core",)) == rid
+    assert pipeline.run(rid).status == "completed" and db.scalar("SELECT COUNT(*) FROM analysis_tasks WHERE status = 'failed'") == 0

@@ -1,7 +1,7 @@
 ; Установщик BookMind Local (Inno Setup 6). Сборка: ISCC.exe /DAppVersion=0.2.0 installer\bookmind.iss
 ; Предварительно: pyinstaller bookmind.spec --noconfirm  (создаёт dist\BookMind)
 #ifndef AppVersion
-  #define AppVersion "0.5.3"
+  #define AppVersion "0.5.4"
 #endif
 
 [Setup]

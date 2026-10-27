@@ -2,9 +2,10 @@
 но неизвестные значения не угадываются: подставляется безопасное значение по умолчанию."""
 from __future__ import annotations
 
-from typing import Any
+import contextvars
+from typing import Any, ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator, model_validator
 
 from bookmind.domain.enums import (
     EntityType, FactCategory, FactKind, GoalStatus, GoalType, MotifKind, NarrativeMode, QuestionKind,
@@ -72,6 +73,23 @@ def _str_list(v: Any) -> list[str]:
 
 class _Base(BaseModel):
     model_config = ConfigDict(extra="ignore", use_enum_values=False)
+    ALIASES: ClassVar[dict[str, tuple[str, ...]]] = {}     # поле -> ключи, под которыми модель могла вернуть то же самое
+    FROM_STRING: ClassVar[str] = ""                         # в какое поле положить значение, если модель вернула просто строку
+
+    @model_validator(mode="before")
+    @classmethod
+    def _lenient_keys(cls, data: Any) -> Any:
+        if isinstance(data, str) and cls.FROM_STRING and data.strip():
+            return {cls.FROM_STRING: data.strip()}
+        if isinstance(data, dict) and cls.ALIASES:
+            data = dict(data)
+            for field, names in cls.ALIASES.items():
+                if not _str(data.get(field)):
+                    for n in names:
+                        if _str(data.get(n)):
+                            data[field] = data[n]
+                            break
+        return data
 
 
 def _enum_field(name: str, enum_cls, default):
@@ -185,6 +203,8 @@ class CoreAnalysis(_Base):
 
 
 class GoalItem(_Base):
+    ALIASES = {"character": ("name", "person", "who", "entity", "персонаж", "герой"),
+               "description": ("goal", "text", "objective", "цель", "описание")}
     character: str
     description: str
     origin: str = ""
@@ -209,6 +229,8 @@ class GoalItem(_Base):
 
 
 class RelationshipItem(_Base):
+    ALIASES = {"a": ("character_a", "from", "source", "person_a", "first"), "b": ("character_b", "to", "target", "person_b", "second"),
+               "rel_type": ("type", "relation", "relationship", "kind", "отношение", "тип")}
     a: str
     b: str
     rel_type: str
@@ -224,6 +246,10 @@ class RelationshipItem(_Base):
 
 
 class ThreadItem(_Base):
+    ALIASES = {"title": ("name", "thread", "thread_name", "thread_title", "plot", "plot_thread", "topic", "line", "label",
+                         "название", "линия", "сюжетная линия", "тема"),
+               "description": ("summary", "details", "text", "описание")}
+    FROM_STRING = "title"
     title: str
     description: str = ""
     status: ThreadStatus = ThreadStatus.OPEN
@@ -243,6 +269,8 @@ class ThreadItem(_Base):
 
 
 class QuestionItem(_Base):
+    ALIASES = {"text": ("question", "mystery", "secret", "title", "name", "description", "вопрос", "загадка", "текст")}
+    FROM_STRING = "text"
     kind: QuestionKind = QuestionKind.MYSTERY
     text: str
     status: QuestionStatus = QuestionStatus.OPEN
@@ -265,6 +293,8 @@ class QuestionItem(_Base):
 
 
 class MotifItem(_Base):
+    ALIASES = {"name": ("motif", "title", "symbol", "theme", "мотив", "название", "символ")}
+    FROM_STRING = "name"
     name: str
     kind: MotifKind = MotifKind.RECURRING_MOTIF
     description: str = ""
@@ -277,17 +307,58 @@ class MotifItem(_Base):
         return _str(v)
 
 
+_DEEP_ITEMS: dict[str, Any] = {}      # заполняется ниже: имя поля -> класс элемента
+_dropped_ctx: "contextvars.ContextVar[list[str] | None]" = contextvars.ContextVar("deep_dropped", default=None)
+
+
 class DeepAnalysis(_Base):
+    """Один непригодный элемент (например, сюжетная линия без названия) отбрасывается с замечанием, а не рушит весь ответ."""
     goals: list[GoalItem] = Field(default_factory=list)
     relationships: list[RelationshipItem] = Field(default_factory=list)
     plot_threads: list[ThreadItem] = Field(default_factory=list)
     questions: list[QuestionItem] = Field(default_factory=list)
     motifs: list[MotifItem] = Field(default_factory=list)
+    _dropped: list[str] = PrivateAttr(default_factory=list)
 
-    @field_validator("goals", "relationships", "plot_threads", "questions", "motifs", mode="before")
+    @property
+    def dropped(self) -> list[str]:
+        return self._dropped
+
+    @model_validator(mode="before")
     @classmethod
-    def _l(cls, v):
-        return v or []
+    def _filter_items(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        notes: list[str] = []
+        for key, item_cls in _DEEP_ITEMS.items():
+            raw = data.get(key) or []
+            if isinstance(raw, dict):
+                raw = [raw]
+            if not isinstance(raw, list):
+                notes.append(f"{key}: ожидался список, получено {type(raw).__name__}; поле пропущено")
+                data[key] = []
+                continue
+            good = []
+            for i, item in enumerate(raw):
+                try:
+                    item_cls.model_validate(item)
+                    good.append(item)
+                except ValidationError as exc:
+                    first = exc.errors()[0]
+                    notes.append(f"{key}[{i}] пропущен: {'.'.join(map(str, first['loc']))}: {first['msg']}")
+            data[key] = good
+        _dropped_ctx.set(notes)
+        return data
+
+    @model_validator(mode="after")
+    def _keep_notes(self) -> "DeepAnalysis":
+        self._dropped = _dropped_ctx.get() or []
+        _dropped_ctx.set(None)
+        return self
+
+
+_DEEP_ITEMS.update(goals=GoalItem, relationships=RelationshipItem, plot_threads=ThreadItem, questions=QuestionItem, motifs=MotifItem)
 
 
 class ChapterSummary(_Base):

@@ -237,9 +237,13 @@ class MainWindow(QMainWindow):
         self.btn_start = QPushButton("Анализировать / продолжить")
         self.btn_stop = QPushButton("Остановить")
         self.btn_stop.setEnabled(False)
+        self.btn_retry = QPushButton("Повторить неудавшиеся")
+        self.btn_retry.setToolTip("Задачи, которые не удалось выполнить (например, модель вернула неподходящий ответ), получают новые попытки")
         self.btn_start.clicked.connect(self.start_analysis)
+        self.btn_retry.clicked.connect(self.retry_failed_analysis)
         self.btn_stop.clicked.connect(self.stop_analysis)
         ctl.addWidget(self.btn_start)
+        ctl.addWidget(self.btn_retry)
         ctl.addWidget(self.btn_stop)
         ctl.addStretch()
         lay.addLayout(ctl)
@@ -307,6 +311,24 @@ class MainWindow(QMainWindow):
             self.refresh_library()
 
     # ---------- анализ ----------
+    def retry_failed_analysis(self) -> None:
+        if self.thread_analysis and self.thread_analysis.isRunning():
+            return
+        bid = self.selected_book()
+        if not bid:
+            return
+        try:
+            model = self.selected_model()
+        except BookMindError as exc:
+            self.error(str(exc))
+            return
+        n = self.ctx.pipeline().retry_failed(bid, model)
+        if not n:
+            QMessageBox.information(self, "BookMind", "Неудавшихся задач нет.")
+            return
+        self.log(f"Повторяю неудавшиеся задачи: {n}")
+        self.start_analysis()
+
     def start_analysis(self) -> None:
         if self.thread_analysis and self.thread_analysis.isRunning():
             return

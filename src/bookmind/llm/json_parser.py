@@ -94,7 +94,8 @@ def load_json_object(raw: str) -> tuple[dict, list[str]]:
 def parse_model_json(raw: str, model: type[T]) -> tuple[T, list[str]]:
     data, issues = load_json_object(raw)
     try:
-        return model.model_validate(data), issues
+        obj = model.model_validate(data)
+        return obj, issues + list(getattr(obj, "dropped", []) or [])
     except ValidationError as exc:
         brief = "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors()[:5])
         raise ModelOutputError(f"Ответ не соответствует схеме: {brief}", raw) from exc
