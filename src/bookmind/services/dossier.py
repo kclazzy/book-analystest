@@ -11,6 +11,11 @@ from bookmind.services.exports import ExportService
 from bookmind.storage.database import Database, now_iso
 
 CHARS_PER_TOKEN = 2.7        # для русского текста; оценка грубая
+QUOTE_MODES = ("none", "limited")     # none — только пересказ и ссылки на место; limited — короткие цитаты в пределах бюджета
+MAX_QUOTE_WORDS = 25                  # длиннее цитата обрезается
+QUOTE_SHARE = 0.015                   # все цитаты вместе — не больше этой доли текста книг
+MAX_QUOTES_PER_CHAPTER = 5
+CHARS_PER_WORD = 6.3                  # русский текст с пробелами, для оценки объёма книг
 
 PREAMBLE = ("Это досье по книгам, собранное программой BookMind. Все факты подтверждены цитатами из текста, "
             "непроверенные данные не включены. Используй его как источник правды о сюжете, героях и мире; "
@@ -64,28 +69,68 @@ class DossierService:
                         "unverified_facts_hidden": hidden})
         return out
 
-    def build(self, series_id: str, with_quotes: bool = True, up_to_book_order: int | None = None) -> dict[str, Any]:
+    def _source_words(self, series_id: str, cap: int) -> int:
+        chars = self.db.scalar("SELECT COALESCE(SUM(LENGTH(c.text)), 0) FROM chunks c JOIN books b ON b.id = c.book_id "
+                               "WHERE b.series_id = ? AND b.series_order <= ?", (series_id, cap)) or 0
+        return int(chars / CHARS_PER_WORD)
+
+    @staticmethod
+    def _limit_sources(node: Any, mode: str, state: dict[str, Any]) -> None:
+        """Заменяет сырые источники ссылками на место; цитаты оставляет только в режиме limited и в пределах бюджета."""
+        if isinstance(node, dict):
+            if isinstance(node.get("sources"), list):
+                node["sources"] = [DossierService._ref(src, mode, state) for src in node["sources"]]
+            for k, v in node.items():
+                if k != "sources":
+                    DossierService._limit_sources(v, mode, state)
+        elif isinstance(node, list):
+            for v in node:
+                DossierService._limit_sources(v, mode, state)
+
+    @staticmethod
+    def _ref(src: dict[str, Any], mode: str, state: dict[str, Any]) -> dict[str, Any]:
+        key = src.get("id")
+        if key in state["done"]:
+            return state["done"][key]
+        ref = {k: src.get(k) for k in ("id", "book_id", "book_title", "chapter_id", "chapter_title")}
+        quote = (src.get("quote") or "").strip()
+        if mode == "limited" and quote:
+            words = quote.split()
+            if len(words) > MAX_QUOTE_WORDS:
+                quote = " ".join(words[:MAX_QUOTE_WORDS]) + "…"
+                words = words[:MAX_QUOTE_WORDS]
+            per = state["per_chapter"].get(ref["chapter_id"], 0)
+            if state["left"] >= len(words) and per < MAX_QUOTES_PER_CHAPTER:
+                ref["quote"] = quote
+                state["left"] -= len(words)
+                state["per_chapter"][ref["chapter_id"]] = per + 1
+        state["done"][key] = ref
+        return ref
+
+    def build(self, series_id: str, quotes: str = "none", up_to_book_order: int | None = None) -> dict[str, Any]:
+        if quotes not in QUOTE_MODES:
+            raise ValueError(f"Неизвестный режим цитат: {quotes}. Доступны: {', '.join(QUOTE_MODES)}")
         d = self.exports.collect(series_id, up_to_book_order)
         cap = up_to_book_order if up_to_book_order is not None else 10 ** 6
         d["summaries"] = self.summaries(series_id, cap)
         d["completeness"] = self.completeness(series_id)
-        d["with_quotes"] = with_quotes
-        if not with_quotes:
-            for c in d["characters"]:
-                for fs in c["facts"].values():
-                    for f in fs:
-                        f["sources"] = []
+        d["quotes_mode"] = quotes
+        state = {"done": {}, "per_chapter": {}, "left": int(self._source_words(series_id, cap) * QUOTE_SHARE)}
+        self._limit_sources(d, quotes, state)
         return d
 
     # ---------- Markdown ----------
     @staticmethod
     def _quote(sources: list[dict[str, Any]], n: int = 2) -> str:
-        q = [f"«{s['quote'].strip()}» ({s['book_title']}, {s['chapter_title']})" for s in sources[:n] if s.get("quote")]
-        return "  \n  Цитаты: " + " | ".join(q) if q else ""
+        """Ссылка на место (всегда) и короткие цитаты (если они разрешены режимом и бюджетом)."""
+        where = list(dict.fromkeys(f"{s['book_title']}, {s['chapter_title']}" for s in sources[:n]))
+        if not where:
+            return ""
+        q = [f"«{s['quote']}»" for s in sources[:n] if s.get("quote")]
+        return f"  \n  Источник: {'; '.join(where)}" + (f". Цитаты: {' | '.join(q)}" if q else "")
 
     def to_markdown(self, d: dict[str, Any]) -> str:
-        wq = d["with_quotes"]
-        q = (lambda x: self._quote(x.get("sources", []))) if wq else (lambda x: "")
+        q = lambda x: self._quote(x.get("sources", []))
         L = [f"# Досье: {d['series']}", "", f"_{PREAMBLE}_", ""]
         if d["up_to_book_order"] is not None:
             L += [f"> Только тома до №{d['up_to_book_order']} включительно (без спойлеров).", ""]
@@ -199,11 +244,11 @@ class DossierService:
         return [f"_Часть {i} из {n}. Досье разрезано по разделам; не делай выводов о том, чего нет в этой части, пока не прочитаешь все._\n\n{p.rstrip()}\n"
                 for i, p in enumerate(parts, 1)] if n > 1 else parts
 
-    def export(self, series_id: str, path: Path, *, fmt: str = "md", max_chars: int = 0, with_quotes: bool = True,
+    def export(self, series_id: str, path: Path, *, fmt: str = "md", max_chars: int = 0, quotes: str = "none",
                up_to_book_order: int | None = None) -> list[Path]:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        d = self.build(series_id, with_quotes, up_to_book_order)
+        d = self.build(series_id, quotes, up_to_book_order)
         if fmt == "json":
             path.write_text(json.dumps({**d, "exported_at": now_iso(), "preamble": PREAMBLE}, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
             return [path]

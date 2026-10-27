@@ -418,7 +418,7 @@ def test_dossier_buttons_save_files_and_copy(ctx, qapp, tmp_path, monkeypatch):
     win = MainWindow(ctx)
     out = tmp_path / "x" / "dossier.md"
     monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(out), ""))
-    win.dossier_quotes.setChecked(False)
+    assert win.dossier_quotes.currentData() == "none"                  # безопасный режим по умолчанию
     win.export_dossier("md")
     text = out.read_text(encoding="utf-8")
     assert text.startswith("# Досье") and "Цитаты:" not in text

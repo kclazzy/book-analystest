@@ -815,8 +815,9 @@ class MainWindow(QMainWindow):
         lay.addLayout(row)
         lay.addWidget(QLabel("Досье для нейросети: вся подтверждённая аналитика серии одним текстом (для чата или контекста другой модели):"))
         drow = QHBoxLayout()
-        self.dossier_quotes = QCheckBox("с цитатами")
-        self.dossier_quotes.setChecked(True)
+        self.dossier_quotes = QComboBox()
+        self.dossier_quotes.addItem("без цитат (безопаснее)", "none")
+        self.dossier_quotes.addItem("короткие цитаты в пределах бюджета", "limited")
         self.dossier_parts = QSpinBox()
         self.dossier_parts.setRange(0, 1000)
         self.dossier_parts.setSingleStep(10)
@@ -876,7 +877,7 @@ class MainWindow(QMainWindow):
             return
         try:
             files = DossierService(self.ctx.db).export(sid, Path(path), fmt=fmt, max_chars=self.dossier_parts.value() * 1000,
-                                                       with_quotes=self.dossier_quotes.isChecked(), up_to_book_order=self.spoiler_limit())
+                                                       quotes=self.dossier_quotes.currentData(), up_to_book_order=self.spoiler_limit())
         except (BookMindError, OSError, ValueError) as exc:
             self.error(str(exc))
             return
@@ -889,7 +890,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "BookMind", "Сначала выберите серию.")
             return
         svc = DossierService(self.ctx.db)
-        text = svc.to_markdown(svc.build(sid, self.dossier_quotes.isChecked(), self.spoiler_limit()))
+        text = svc.to_markdown(svc.build(sid, self.dossier_quotes.currentData(), self.spoiler_limit()))
         QApplication.clipboard().setText(text)
         self.log(f"Досье скопировано в буфер обмена: {len(text)} знаков, около {estimate_tokens(text)} токенов")
 
