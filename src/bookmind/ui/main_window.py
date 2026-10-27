@@ -833,6 +833,10 @@ class MainWindow(QMainWindow):
             drow.addWidget(w_)
         drow.addStretch()
         lay.addLayout(drow)
+        self.dossier_notice = QLabel("Досье — пересказ защищённых авторским правом книг: используйте его только для личного использования, не публикуйте и не отправляйте в "
+                                     "облачные сервисы без права на это. Режим «без цитат» безопаснее; в досье нет длинных кусков текста книги.")
+        self.dossier_notice.setWordWrap(True)
+        lay.addWidget(self.dossier_notice)
         lay.addWidget(QLabel("Резервные копии:"))
         row2 = QHBoxLayout()
         for text, fn in (("Создать копию…", self.make_backup), ("Восстановить из копии…", self.restore_backup)):

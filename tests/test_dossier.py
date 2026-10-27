@@ -171,3 +171,15 @@ def test_short_statements_and_normal_summaries_are_kept(world):
     md = svc.to_markdown(d)
     assert d["filtered"] == 0 and "Исключено" not in md
     assert "Мира спрятала ключ под половицей" in md                           # короткий факт, совпадающий с фразой книги, допустим
+
+
+# ---------- пометки и предупреждения ----------
+def test_dossier_names_sources_and_states_personal_use(world):
+    qa, _, _, sid, _, _ = world
+    svc = DossierService(qa.db)
+    qa.db.execute("UPDATE books SET author = 'Автор Оригинала' WHERE series_order = 1")
+    md = svc.to_markdown(svc.build(sid))
+    head = md.split("## Книги")[0]
+    assert "Только для личного использования" in head and "не распространяйте" in head
+    assert "Огонь на Западной башне" in md.split("## Книги")[1] and "Автор Оригинала" in md
+    assert "личного использования" in svc.build(sid)["notice"]                 # и в JSON

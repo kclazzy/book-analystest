@@ -432,3 +432,11 @@ def test_dossier_buttons_save_files_and_copy(ctx, qapp, tmp_path, monkeypatch):
     win.copy_dossier()
     assert QApplication.clipboard().text().startswith("# Досье")
     win.close()
+
+
+def test_dossier_tab_shows_copyright_notice_and_modes(ctx, qapp):
+    win = MainWindow(ctx)
+    text = win.dossier_notice.text()
+    assert "личного использования" in text and "облач" in text
+    assert [win.dossier_quotes.itemData(i) for i in range(win.dossier_quotes.count())] == ["none", "limited"]
+    win.close()

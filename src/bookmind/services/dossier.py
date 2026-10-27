@@ -26,6 +26,10 @@ PREAMBLE = ("Это досье по книгам, собранное прогр�
             "если в досье чего-то нет, не выдумывай, а так и скажи.")
 
 
+NOTICE = ("Только для личного использования. Досье построено по произведениям, защищённым авторским правом: не распространяйте его, "
+          "не публикуйте и не отправляйте в сторонние сервисы, если у вас нет на это права.")
+
+
 def estimate_tokens(text: str) -> int:
     return int(len(text) / CHARS_PER_TOKEN)
 
@@ -145,6 +149,7 @@ class DossierService:
         d["summaries"] = self.summaries(series_id, cap)
         d["completeness"] = self.completeness(series_id)
         d["quotes_mode"] = quotes
+        d["notice"] = NOTICE
         counter = [0]
         self._drop_copies(d, self._book_shingles(series_id, cap), counter)
         d["filtered"] = counter[0]
@@ -164,7 +169,7 @@ class DossierService:
 
     def to_markdown(self, d: dict[str, Any]) -> str:
         q = lambda x: self._quote(x.get("sources", []))
-        L = [f"# Досье: {d['series']}", "", f"_{PREAMBLE}_", ""]
+        L = [f"# Досье: {d['series']}", "", f"_{PREAMBLE}_", "", f"**{d['notice']}**", ""]
         if d["up_to_book_order"] is not None:
             L += [f"> Только тома до №{d['up_to_book_order']} включительно (без спойлеров).", ""]
         L += ["## Книги", *[f"{b['series_order']}. {b['title']}" + (f" — {b['author']}" if b.get("author") else "") for b in d["books"]], ""]
