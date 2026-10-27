@@ -360,3 +360,36 @@ def test_thread_failure_lands_in_error_journal(ctx, qapp, monkeypatch):
     win._analysis_failed("Ollama упал\n\nTraceback: ...")
     assert ctx.errors.entries()[0].message == "Ollama упал" and "Traceback" in ctx.errors.entries()[0].traceback
     win.close()
+
+
+def test_changing_folder_asks_about_transfer(ctx, qapp, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+    from bookmind import config
+    monkeypatch.setattr(config, "home_dir", lambda: tmp_path / "home")
+    monkeypatch.delenv(config.ENV_DATA_DIR, raising=False)
+    win = MainWindow(ctx)
+    asked = []
+
+    def pick(folder, answer):
+        monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *a, **k: str(folder))
+        monkeypatch.setattr(win, "_ask_transfer", lambda path, t, c: asked.append((t, c)) or answer)
+        win.choose_data_dir()
+
+    pick(tmp_path / "t0", "copy")                                   # данных нет — вопроса нет, папка просто меняется
+    assert asked == [] and config.read_pointer() == tmp_path / "t0"
+    config.write_pointer(None)
+    ctx.library.import_book(write_txt(tmp_path / "b.txt", BOOK1), title=BOOK1_TITLE)
+    pick(tmp_path / "t1", None)                                     # отмена — ничего не меняется
+    assert asked == [(False, True)] and config.read_pointer() is None and not (tmp_path / "t1" / "database").exists()
+    pick(tmp_path / "t2", "empty")                                  # начать с пустой
+    assert config.read_pointer() == tmp_path / "t2" and not (tmp_path / "t2" / "database" / "bookmind.sqlite").exists()
+    pick(tmp_path / "t3", "copy")                                   # перенести
+    import sqlite3
+    con = sqlite3.connect(tmp_path / "t3" / "database" / "bookmind.sqlite")
+    assert con.execute("select count(*) from books").fetchone()[0] == 1
+    con.close()
+    assert (ctx.data_dir / "database" / "bookmind.sqlite").exists()
+    asked.clear()
+    pick(tmp_path / "t3", "use")                                    # в t3 уже есть данные — спрашивает про использование
+    assert asked == [(True, True)] and config.read_pointer() == tmp_path / "t3"
+    win.close()

@@ -50,6 +50,23 @@ def check_target(current: Path, target: Path) -> TargetCheck:
     return TargetCheck(True, has_data=has)
 
 
+def has_data(folder: Path) -> bool:
+    """Есть ли в папке что переносить: книги в базе или файлы в подпапках."""
+    folder = Path(folder)
+    db = folder / DB_REL
+    if db.exists():
+        try:
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            try:
+                if con.execute("SELECT COUNT(*) FROM books").fetchone()[0]:
+                    return True
+            finally:
+                con.close()
+        except sqlite3.Error:
+            return True                      # база есть, но не читается — тем более не стоит терять
+    return any((folder / sub).is_dir() and any((folder / sub).iterdir()) for sub in ("books", "exports", "backups"))
+
+
 def copy_data(current: Path, target: Path) -> None:
     """Копирует данные; базу — через backup API SQLite (корректно при открытой базе и WAL). Исходные данные не удаляются."""
     current, target = Path(current), Path(target)

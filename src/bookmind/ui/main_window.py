@@ -1000,6 +1000,34 @@ class MainWindow(QMainWindow):
         self.sys_tab = w
 
     # ---------- папка данных ----------
+    def _ask_transfer(self, path: str, target_has_data: bool, current_has_data: bool) -> str | None:
+        """Спрашивает, что делать с данными. Возвращает copy | empty | use или None (отмена)."""
+        box = QMessageBox(self)
+        box.setWindowTitle("Папка данных")
+        box.setIcon(QMessageBox.Question)
+        if target_has_data:
+            box.setText(f"В выбранной папке уже есть данные BookMind:\n{path}")
+            box.setInformativeText("Использовать их? Данные из текущей папки останутся на месте и не будут объединяться с ними.")
+            b_use = box.addButton("Использовать данные из этой папки", QMessageBox.AcceptRole)
+            b_copy = b_empty = None
+        else:
+            box.setText(f"Новая папка данных:\n{path}")
+            box.setInformativeText("В текущей папке есть книги и результаты анализа. Перенести их в новую папку? "
+                                   "Старая папка не удаляется.")
+            b_copy = box.addButton("Перенести данные", QMessageBox.AcceptRole)
+            b_empty = box.addButton("Начать с пустой папки", QMessageBox.DestructiveRole)
+            b_use = None
+        box.addButton("Отмена", QMessageBox.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is not None and clicked is b_use:
+            return "use"
+        if clicked is not None and clicked is b_copy:
+            return "copy"
+        if clicked is not None and clicked is b_empty:
+            return "empty"
+        return None
+
     def choose_data_dir(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Выберите папку для данных", str(self.ctx.data_dir.parent))
         if not path:
@@ -1008,14 +1036,13 @@ class MainWindow(QMainWindow):
         if not chk.ok:
             QMessageBox.warning(self, "Папка данных", chk.message)
             return
-        if chk.has_data:
-            text = f"В папке уже есть данные BookMind:\n{path}\n\nИспользовать их? Текущие данные останутся на месте."
-            copy = False
+        current_has = datadir.has_data(self.ctx.data_dir)
+        if not chk.has_data and not current_has:
+            choice = "empty"                    # переносить нечего — не задаём лишних вопросов
         else:
-            text = f"Скопировать текущие данные в\n{path}\nи использовать эту папку?\nСтарая папка не будет удалена."
-            copy = True
-        if QMessageBox.question(self, "Папка данных", text) == QMessageBox.Yes:
-            self.apply_data_dir(Path(path), copy=copy)
+            choice = self._ask_transfer(path, chk.has_data, current_has)
+        if choice:
+            self.apply_data_dir(Path(path), copy=(choice == "copy"))
 
     def apply_data_dir(self, path: Path, copy: bool = True) -> bool:
         try:

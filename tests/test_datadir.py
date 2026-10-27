@@ -79,3 +79,19 @@ def test_existing_data_folder_is_used_without_copy(home, tmp_path):
     assert config.default_data_dir() == tmp_path / "a"
     with pytest.raises(BookMindError):
         datadir.change_data_dir(cur, cur / "sub")
+
+
+def test_has_data(home, tmp_path):
+    from bookmind.ui.context import AppContext
+    empty = tmp_path / "e"
+    empty.mkdir()
+    assert not datadir.has_data(empty)
+    ctx = AppContext(data_dir=tmp_path / "d")
+    assert not datadir.has_data(ctx.data_dir)                      # пустая база и пустые папки — не данные
+    ctx.library.import_book(write_txt(tmp_path / "b.txt", BOOK1), title=BOOK1_TITLE)
+    assert datadir.has_data(ctx.data_dir)
+    ctx.close()
+    broken = tmp_path / "broken"
+    (broken / "database").mkdir(parents=True)
+    (broken / "database" / "bookmind.sqlite").write_bytes(b"not a database")
+    assert datadir.has_data(broken)
