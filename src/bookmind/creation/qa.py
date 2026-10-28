@@ -19,6 +19,8 @@ _META_ANY = re.compile(r"как (?:языковая модель|ии\b|иску
 _LATIN = re.compile(r"(?=\w*[А-Яа-яЁё])(?=\w*[A-Za-z])\w+|\b[A-Za-z]{3,}\b")
 _SERVICE = re.compile(r"^\s*[*_#\s]*(?:место действия|точка зрения|время действия|цель героя|конфликт|итог|кадр\s*\d*|сцена\s*\d*|локация|пов)\s*[:—–]", re.IGNORECASE)
 _FIRST = re.compile(r"\b(?:я|мне|меня|мной|мы|нас|нам|нами|мой|моя|моё|мои)\b", re.IGNORECASE)
+_DEATH = re.compile(r"\b(?:погиб(?:ла|ли|ло)?|умер(?:ла|ли|ло)?|убит(?:а|ы|о)?|навсегда исчез(?:ла|ли|ло)?|стёрт навсегда|стерт навсегда|не стало)\b", re.IGNORECASE)
+_DEATH_DOUBT = re.compile(r"слух|говорил|будто|казалось|может|мог |чуть не|едва не|если|не погиб|не умер|вспомн|тот, кто|как погиб|ложн|якобы", re.IGNORECASE)
 _CLICHE = re.compile(r"вместе они|новую? (?:эр[уы]|жизн|глав)|начало нового|всё только начинается|впереди (?:их |его |её )?ждал|"
                      r"светл\w+ будущ|ничто не (?:могло )?остановит|гармони[июя]|навсегда изменил|надежд\w+ на (?:лучшее|будущее)|"
                      r"солнце (?:вставало|восходило)|рассвет нового", re.IGNORECASE)
@@ -299,6 +301,7 @@ def check_book(texts: dict[int, str], plans: dict[int, ChapterPlan], cast: Cast,
         if len(chs) >= 3:
             rep.findings.append(Finding("warning", "same_start", f"главы {', '.join(str(c + 1) for c in sorted(chs))} начинаются одинаково: «{s}»", related=sorted(chs)))
     _book_style_checks(rep, present)
+    _status_contradictions(rep, present, cast)
     rep.findings.sort(key=lambda f: (f.chapter is None, f.chapter or 0, f.severity != "error"))
     return rep
 
@@ -335,3 +338,44 @@ def _book_style_checks(rep: BookReport, present: dict[int, str]) -> None:
         chs = [i for i, _ in per_ch[st].most_common(OVERUSE_CHAPTERS)]
         rep.findings.append(Finding("warning", "word_overuse", f"слово «{shown[st]}» (и однокоренные) встречается {n} раз — {n * 1000 // total} на 1000 слов",
                                     related=sorted(chs)))
+
+
+def _aliases(name: str) -> set[str]:
+    return {stem(w) for w in re.findall(r"[А-ЯЁA-Z][\w]{2,}", name)}
+
+
+def _subject_dies(sent: str, al: set[str]) -> bool:
+    """Имя героя стоит прямо перед глаголом гибели («Осип Градов погиб»), а не в другой части предложения."""
+    for m in _DEATH.finditer(sent):
+        before = _WORD.findall(sent[:m.start()])[-4:]
+        for k in range(len(before) - 1, -1, -1):
+            if before[k].casefold() in {"что", "как", "понял", "знал", "видел", "город", "мир"}:
+                break
+            if stem(before[k]) in al:
+                return True
+    return False
+
+
+def _status_contradictions(rep: BookReport, present: dict[int, str], cast: Cast) -> None:
+    """Герой «погиб» в одной главе, а в более поздней снова действует. Только прямые утверждения вне цитат и слухов."""
+    last = max(present) if present else 0
+    for m in cast.members:
+        al = _aliases(m.name)
+        if not al:
+            continue
+        death = None
+        for i in sorted(present):
+            for sent in _sentences(re.sub(r"«[^»]*»", " ", present[i])):
+                if _DEATH.search(sent) and not _DEATH_DOUBT.search(sent) and _subject_dies(sent, al) and not sent.lstrip().startswith(("—", "–")):
+                    death = i
+                    break
+            if death is not None:
+                break
+        if death is None or death == last:
+            continue
+        for j in sorted(k for k in present if k > death):
+            if any(Counter(stem(w) for w in _WORD.findall(present[j]))[a] >= 2 for a in al):
+                rep.findings.append(Finding("warning", "status_contradiction",
+                                            f"герой «{m.name}» погиб или исчез навсегда в главе {death + 1}, но снова действует в главе {j + 1}",
+                                            related=[death, j]))
+                break

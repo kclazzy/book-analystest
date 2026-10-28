@@ -168,3 +168,33 @@ def test_cliche_endings_pattern_is_reported_once_for_book():
     end = " Вместе они начали новую эру, и впереди их ждало будущее."
     rep = qa.check_book(book_texts(6, end), {}, CAST, 6)
     assert [f.chapter for f in rep.findings if f.code == "cliche_ending"] == [None]
+
+
+# ---------- противоречия между главами ----------
+def _story(death_in: int, back_in: int, sentence: str):
+    t = {i: f"Глава {i}. " + GOOD for i in range(6)}
+    t[death_in] += " " + sentence
+    t[back_in] += " Осип Градов вошёл в рубку и сел за пульт, а Вера Лунина молча смотрела на него."
+    return t
+
+
+def test_character_who_died_and_reappears_is_reported():
+    rep = qa.check_book(_story(1, 4, "Осип Градов погиб в шлюзе, и больше его никто не видел."), {}, CAST, 6)
+    f = [x for x in rep.findings if x.code == "status_contradiction"]
+    assert f and f[0].severity == "warning" and "Осип Градов" in f[0].message and f[0].related == [1, 4]
+
+
+@pytest.mark.parametrize("sentence", [
+    "Говорили, что Осип Градов погиб, но это был слух, и он вернётся.",
+    "«Осип Градов погиб», — сказал кто-то в темноте.",
+    "Вера вспомнила, как погиб её учитель.",
+    "Осип Градов понял, что этот город уже умер.",
+])
+def test_rumours_quotes_and_other_people_are_not_contradictions(sentence):
+    assert not [x for x in qa.check_book(_story(1, 4, sentence), {}, CAST, 6).findings if x.code == "status_contradiction"]
+
+
+def test_death_in_last_chapters_is_not_a_contradiction():
+    t = {i: f"Глава {i}. " + GOOD for i in range(6)}
+    t[5] += " Осип Градов погиб в шлюзе."
+    assert not [x for x in qa.check_book(t, {}, CAST, 6).findings if x.code == "status_contradiction"]

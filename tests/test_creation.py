@@ -441,3 +441,19 @@ def test_chapters_with_only_a_flag_but_real_description_are_not_empty(db, sid, s
     svc, _ = make(db, settings, handler)
     pid = svc.create(sid, AdaptParams(seed=1))
     assert svc.run(pid, model).flagged == [1] and svc.empty_chapters(pid) == []
+
+
+def test_chapter_plan_prompt_asks_for_through_line_and_continuity(db, sid, settings, model):
+    seen = []
+
+    from bookmind.analysis.extractor import StructuredCaller
+    from bookmind.creation.schemas import AdaptParams
+    from bookmind.creation.service import AdaptationService
+    llm = ScriptedLLM()
+    orig = llm.chat
+    llm.chat = lambda m, msgs, **k: (seen.append(msgs[-1]["content"]) or orig(m, msgs, **k))
+    svc = AdaptationService(db, StructuredCaller(llm, settings), settings)
+    pid = svc.create(sid, AdaptParams(divergence="medium", seed=3, chapter_words=300))
+    svc.run(pid, model)
+    plans = [p for p in seen if "Составь подробный план главы" in p]
+    assert plans and all("СКВОЗНАЯ ЛИНИЯ" in p and "не возвращается без объяснения" in p for p in plans)
