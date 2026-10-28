@@ -329,3 +329,15 @@ def test_write_runs_fix_automatically_when_enabled(db, sid, settings, model):
     svc, w, llm, pid = setup(db, sid, settings, model, extra={"write_handler": write}, words=500, auto_fix=True, fix_rounds=1)
     s = w.write(pid, model, chapters=[0])
     assert len(calls) == 2 and s.fixed == [0] and "второй" in w.chapter_text(pid, 0)
+
+
+def test_book_gets_author_cover_and_illustrations_from_params(db, sid, settings, model):
+    pytest.importorskip("PIL")
+    svc, w, llm, pid = setup(db, sid, settings, model, words=500, author="Mister.Ti", illustrations=True)
+    w.write(pid, model, chapters=[0, 1])
+    b = w.book(pid)
+    assert b.author == "Mister.Ti" and b.cover and all(c.image for c in b.chapters)
+    svc2, w2, _, pid2 = setup(db, sid, settings, model, words=500, illustrations=False)
+    w2.write(pid2, model, chapters=[0])
+    b2 = w2.book(pid2)
+    assert b2.author == "BookMind" and b2.cover is None and b2.chapters[0].image is None

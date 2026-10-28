@@ -1,6 +1,7 @@
 """Экспорт готовой новой книги: Markdown, TXT, FB2, EPUB."""
 from __future__ import annotations
 
+import base64
 import re
 import uuid
 import zipfile
@@ -19,7 +20,8 @@ FORMATS = {".md": "Markdown", ".txt": "Текст", ".fb2": "FictionBook (FB2)",
 class BookChapter:
     title: str
     text: str
-    number: int = 0          # номер в плане; 0 — по порядку
+    number: int = 0          # номер в плане; 0 — по порядку; меньше нуля — без номера (пролог, эпилог)
+    image: bytes | None = None   # PNG-иллюстрация в начале главы (EPUB, FB2)
 
 
 @dataclass
@@ -29,8 +31,11 @@ class Book:
     annotation: str = ""
     author: str = AUTHOR
     language: str = "ru"
+    cover: bytes | None = None   # PNG-обложка (EPUB, FB2)
 
     def heading(self, i: int) -> str:
+        if self.chapters[i].number < 0:           # пролог, эпилог и т. п.: без номера, заголовок как есть
+            return self.chapters[i].title.strip()
         t = re.sub(r"^\s*глава\s*\d+\s*[.:—–-]*\s*", "", self.chapters[i].title, flags=re.I).strip()
         return f"Глава {self.chapters[i].number or i + 1}" + (f". {t}" if t else "")
 
@@ -57,18 +62,29 @@ def to_text(book: Book) -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
+def _b64(data: bytes) -> str:
+    return base64.encodebytes(data).decode("ascii")
+
+
 def to_fb2(book: Book) -> str:
-    secs = []
+    secs, binaries = [], []
+    if book.cover:
+        binaries.append(f'<binary id="cover.png" content-type="image/png">{_b64(book.cover)}</binary>')
     for i, c in enumerate(book.chapters):
         ps = "".join(f"<p>{escape(p)}</p>" for p in paragraphs(c.text))
-        secs.append(f"<section><title><p>{escape(book.heading(i))}</p></title>{ps}</section>")
+        img = ""
+        if c.image:
+            binaries.append(f'<binary id="ch{i + 1:03d}.png" content-type="image/png">{_b64(c.image)}</binary>')
+            img = f'<image l:href="#ch{i + 1:03d}.png"/>'
+        secs.append(f"<section><title><p>{escape(book.heading(i))}</p></title>{img}{ps}</section>")
+    cover = '<coverpage><image l:href="#cover.png"/></coverpage>' if book.cover else ""
     ann = f"<annotation><p>{escape(book.annotation)}</p></annotation>" if book.annotation else ""
     date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    return ('<?xml version="1.0" encoding="utf-8"?>\n<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0">'
+    return ('<?xml version="1.0" encoding="utf-8"?>\n<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">'
             f"<description><title-info><genre>prose_contemporary</genre><author><first-name>{escape(book.author)}</first-name>"
-            f"<last-name></last-name></author><book-title>{escape(book.title)}</book-title>{ann}<lang>{book.language}</lang></title-info>"
+            f"<last-name></last-name></author><book-title>{escape(book.title)}</book-title>{ann}{cover}<lang>{book.language}</lang></title-info>"
             f"<document-info><author><nickname>{escape(book.author)}</nickname></author><date>{date}</date><id>{uuid.uuid4()}</id>"
-            f"<version>1.0</version></document-info></description><body><title><p>{escape(book.title)}</p></title>{''.join(secs)}</body></FictionBook>\n")
+            f"<version>1.0</version></document-info></description><body><title><p>{escape(book.title)}</p></title>{''.join(secs)}</body>{''.join(binaries)}</FictionBook>\n")
 
 
 def _xhtml(title: str, body: str) -> str:
@@ -80,10 +96,17 @@ def write_epub(book: Book, path: Path) -> None:
     uid = f"urn:uuid:{uuid.uuid4()}"
     items, nav_li, ncx_pts = [], [], []
     files: dict[str, str] = {}
+    images: dict[str, bytes] = {}
+    if book.cover:
+        images["images/cover.png"] = book.cover
     for i, c in enumerate(book.chapters):
         name = f"ch{i + 1:03d}.xhtml"
         h = book.heading(i)
-        body = f"<h2>{escape(h)}</h2>" + "".join(f"<p>{escape(p)}</p>" for p in paragraphs(c.text))
+        pic = ""
+        if c.image:
+            pic = f'<p style="text-align:center"><img src="images/ch{i + 1:03d}.png" alt="" style="max-width:100%"/></p>'
+            images[f"images/ch{i + 1:03d}.png"] = c.image
+        body = f"<h2>{escape(h)}</h2>" + pic + "".join(f"<p>{escape(p)}</p>" for p in paragraphs(c.text))
         files[name] = _xhtml(h, body)
         items.append((f"ch{i + 1:03d}", name))
         nav_li.append(f'<li><a href="{name}">{escape(h)}</a></li>')
@@ -98,12 +121,15 @@ def write_epub(book: Book, path: Path) -> None:
     manifest = ('<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>'
                 '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>'
                 '<item id="title" href="title.xhtml" media-type="application/xhtml+xml"/>'
-                + "".join(f'<item id="{i}" href="{n}" media-type="application/xhtml+xml"/>' for i, n in items))
+                + "".join(f'<item id="{i}" href="{n}" media-type="application/xhtml+xml"/>' for i, n in items)
+                + "".join(f'<item id="img{k}" href="{n}" media-type="image/png"' + (' properties="cover-image"' if n.endswith("cover.png") else "") + "/>"
+                          for k, n in enumerate(images)))
     spine = '<itemref idref="title"/>' + "".join(f'<itemref idref="{i}"/>' for i, _ in items)
     opf = ('<?xml version="1.0" encoding="utf-8"?>\n<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">'
            '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
            f'<dc:identifier id="uid">{uid}</dc:identifier><dc:title>{escape(book.title)}</dc:title>'
            f'<dc:creator>{escape(book.author)}</dc:creator><dc:language>{book.language}</dc:language>'
+           + ('<meta name="cover" content="img0"/>' if book.cover else "") +
            f'<meta property="dcterms:modified">{datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}</meta></metadata>'
            f'<manifest>{manifest}</manifest><spine toc="ncx">{spine}</spine></package>')
     container = ('<?xml version="1.0" encoding="utf-8"?>\n<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
@@ -117,6 +143,8 @@ def write_epub(book: Book, path: Path) -> None:
         z.writestr("OEBPS/title.xhtml", title_page, compress_type=zipfile.ZIP_DEFLATED)
         for name, content in files.items():
             z.writestr(f"OEBPS/{name}", content, compress_type=zipfile.ZIP_DEFLATED)
+        for name, data in images.items():
+            z.writestr(f"OEBPS/{name}", data, compress_type=zipfile.ZIP_STORED)
 
 
 def export_book(book: Book, path: Path) -> Path:

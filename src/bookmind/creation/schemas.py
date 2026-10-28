@@ -26,6 +26,8 @@ class AdaptParams(BaseModel):
     source_book_ids: list[str] = Field(default_factory=list)   # пусто — все книги серии
     approved: bool = False
     chapter_words: int = 1200              # ориентир длины главы при написании текста
+    author: str = ""                       # имя автора в файле книги; пусто — «BookMind»
+    illustrations: bool = True             # обложка и картинка к каждой главе (EPUB, FB2)
     auto_fix: bool = True                  # после проверки книги переписывать главы с замечаниями
     fix_rounds: int = 2                    # сколько кругов «проверка → исправление» делать
 

@@ -427,6 +427,12 @@ class MainWindow(QMainWindow):
         self.ad_words.setSingleStep(100)
         self.ad_words.setValue(1200)
         form.addRow("Слов в главе (ориентир):", self.ad_words)
+        self.ad_author = QLineEdit()
+        self.ad_author.setPlaceholderText("имя автора в файле книги (пусто — BookMind)")
+        form.addRow("Автор:", self.ad_author)
+        self.ad_art = QCheckBox("Добавить обложку и иллюстрации к главам (рисуются приложением, нужен Pillow)")
+        self.ad_art.setChecked(True)
+        form.addRow("", self.ad_art)
         self.ad_autofix = QCheckBox("После проверки книги сразу исправлять найденное (переписывать главы с замечаниями)")
         self.ad_autofix.setChecked(True)
         form.addRow("", self.ad_autofix)
@@ -533,7 +539,8 @@ class MainWindow(QMainWindow):
         return AdaptParams(divergence=self.ad_div.currentData(), chapters=self.ad_chapters.value() or None,
                            genre=self.ad_genre.text().strip(), setting=self.ad_setting.text().strip(),
                            keep=[k for k, cb in self.ad_keep.items() if cb.isChecked()], pause_after_plan=self.ad_pause.isChecked(),
-                           chapter_words=self.ad_words.value(), auto_fix=self.ad_autofix.isChecked())
+                           chapter_words=self.ad_words.value(), auto_fix=self.ad_autofix.isChecked(),
+                           author=self.ad_author.text().strip(), illustrations=self.ad_art.isChecked())
 
     def review_empty(self) -> None:
         pid = self.ad_projects.currentData()
@@ -654,6 +661,8 @@ class MainWindow(QMainWindow):
             p = self.ctx.adaptation().params(pid)
             p.chapter_words = self.ad_words.value()
             p.auto_fix = self.ad_autofix.isChecked()
+            p.author = self.ad_author.text().strip()
+            p.illustrations = self.ad_art.isChecked()
             self.ctx.adaptation()._save(pid, params_json=p.model_dump_json())
             self._start_job(WriteThread(self.ctx, model, pid, chapters, rewrite))
 

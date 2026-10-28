@@ -8,7 +8,8 @@ import threading
 from dataclasses import dataclass, field
 from typing import Callable
 
-from bookmind.creation.book_export import Book, BookChapter
+from bookmind.creation import illustrations
+from bookmind.creation.book_export import AUTHOR, Book, BookChapter
 from bookmind.creation import qa
 from bookmind.creation.originality import Check
 from bookmind.creation.schemas import ChapterPlan
@@ -109,13 +110,20 @@ class BookWriter:
         pr = self.svc.premise(pid)
         rep = self.svc.report(pid)
         rows = self._rows(pid)
+        params = self.svc.params(pid)
+        art = params.illustrations and illustrations.available()
+        total = max(1, len(rep["chapters"]) - 1)
         chapters = []
         for c in rep["chapters"]:
             r = rows.get(c["idx"], {})
             if only_written and r.get("text_status") not in ("ok", "flagged"):
                 continue
-            chapters.append(BookChapter(c["title"], r.get("text", ""), c["idx"] + 1))
-        return Book(title=(pr.title if pr and pr.title else rep["title"]), chapters=chapters, annotation=pr.logline if pr else "")
+            pic = illustrations.chapter_art(c["idx"] + 1, c["idx"] / total) if art else None
+            chapters.append(BookChapter(c["title"], r.get("text", ""), c["idx"] + 1, image=pic))
+        title = pr.title if pr and pr.title else rep["title"]
+        author = params.author.strip() or AUTHOR
+        cover = illustrations.cover_art(title, author, seed=len(title)) if art else None
+        return Book(title=title, chapters=chapters, annotation=pr.logline if pr else "", author=author, cover=cover)
 
     # ---------- запуск ----------
     def write(self, pid: str, model: str, chapters: list[int] | None = None, rewrite: bool = False,
