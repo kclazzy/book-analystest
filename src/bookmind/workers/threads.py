@@ -115,9 +115,9 @@ class WriteThread(_Base):
     progress = Signal(object)
     finished_run = Signal(object)
 
-    def __init__(self, ctx, model: str, project_id: str, chapters: list[int] | None = None, rewrite: bool = False):
+    def __init__(self, ctx, model: str, project_id: str, chapters: list[int] | None = None, rewrite: bool = False, fix: bool = False):
         super().__init__()
-        self.ctx, self.model, self.project_id, self.chapters, self.rewrite = ctx, model, project_id, chapters, rewrite
+        self.ctx, self.model, self.project_id, self.chapters, self.rewrite, self.fix = ctx, model, project_id, chapters, rewrite, fix
         self.cancel_event = threading.Event()
 
     def stop(self) -> None:
@@ -126,6 +126,13 @@ class WriteThread(_Base):
 
     def work(self) -> None:
         self.ctx.client.reset_cancel()
+        if self.fix:
+            wr = self.ctx.writer()
+            fx = wr.fix_book(self.project_id, self.model, on_progress=lambda p: self.progress.emit(p), cancel=self.cancel_event)
+            res = wr._summary(self.project_id, "completed", 0, fx.message)
+            res.fixed = fx.fixed
+            self.finished_run.emit(res)
+            return
         res = self.ctx.writer().write(self.project_id, self.model, self.chapters, self.rewrite,
                                       on_progress=lambda p: self.progress.emit(p), cancel=self.cancel_event)
         self.finished_run.emit(res)

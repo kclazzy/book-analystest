@@ -18,6 +18,7 @@ from tests.test_creation import ORIGINAL, make, sid  # noqa: F401
 def setup(db, sid, settings, model, extra=None, words=500, **p):
     llm = ScriptedLLM(extra=extra or {})
     svc = AdaptationService(db, StructuredCaller(llm, settings), settings)
+    p.setdefault("auto_fix", False)
     pid = svc.create(sid, AdaptParams(divergence="medium", seed=3, chapter_words=words, **p))
     assert svc.run(pid, model).status in ("completed", "awaiting_review")
     return svc, BookWriter(svc), llm, pid
@@ -191,7 +192,7 @@ def test_full_pipeline_from_imported_book_to_epub(db, book1, settings, model, da
     sid_ = db.scalar("SELECT series_id FROM books WHERE id = ?", (book1.book_id,))
     seen = []
     out = tmp_path / "book.epub"
-    r = run_full_book(pipe, svc, w, sid_, model, AdaptParams(seed=3, chapter_words=300, pause_after_plan=True), export_path=out,
+    r = run_full_book(pipe, svc, w, sid_, model, AdaptParams(seed=3, chapter_words=300, pause_after_plan=True, auto_fix=False), export_path=out,
                       on_progress=lambda p: seen.append(p.phase))
     assert r.status == "completed" and r.path == out and out.exists() and r.flagged == []
     assert r.qa_errors == 0 and r.qa_warnings > 0          # шаблонный текст заглушки честно получает замечания о повторах
@@ -200,7 +201,7 @@ def test_full_pipeline_from_imported_book_to_epub(db, book1, settings, model, da
     parsed = parse_epub(out)
     assert len(parsed.chapters) >= 8
     calls = len(llm.calls)
-    r2 = run_full_book(pipe, svc, w, sid_, model, AdaptParams(seed=3, chapter_words=300), project_id=r.project_id, export_path=tmp_path / "again.fb2")
+    r2 = run_full_book(pipe, svc, w, sid_, model, AdaptParams(seed=3, chapter_words=300, auto_fix=False), project_id=r.project_id, export_path=tmp_path / "again.fb2")
     assert r2.status == "completed" and len(llm.calls) == calls               # ничего не делается повторно
 
 
@@ -214,9 +215,9 @@ def test_full_pipeline_pauses_and_resumes(db, book1, settings, model, data_dir, 
     sid_ = db.scalar("SELECT series_id FROM books WHERE id = ?", (book1.book_id,))
     ev = threading.Event()
     ev.set()
-    r = run_full_book(pipe, svc, w, sid_, model, AdaptParams(chapter_words=300), cancel=ev)
+    r = run_full_book(pipe, svc, w, sid_, model, AdaptParams(chapter_words=300, auto_fix=False), cancel=ev)
     assert r.status == "paused" and not r.project_id
-    r = run_full_book(pipe, svc, w, sid_, model, AdaptParams(seed=1, chapter_words=300), export_path=tmp_path / "b.md")
+    r = run_full_book(pipe, svc, w, sid_, model, AdaptParams(seed=1, chapter_words=300, auto_fix=False), export_path=tmp_path / "b.md")
     assert r.status == "completed" and (tmp_path / "b.md").read_text(encoding="utf-8").startswith("# ")
 
 
@@ -237,7 +238,7 @@ def test_full_pipeline_continues_when_some_analysis_tasks_fail(db, book1, settin
     svc = AdaptationService(db, StructuredCaller(llm, settings), settings)
     sid_ = db.scalar("SELECT series_id FROM books WHERE id = ?", (book1.book_id,))
     out = tmp_path / "partial.md"
-    r = run_full_book(pipe, svc, BookWriter(svc), sid_, model, AdaptParams(seed=2, chapter_words=300), export_path=out)
+    r = run_full_book(pipe, svc, BookWriter(svc), sid_, model, AdaptParams(seed=2, chapter_words=300, auto_fix=False), export_path=out)
     assert r.status == "completed" and out.exists()
     assert len(r.warnings) == 1 and "неполным данным" in r.warnings[0] and "Повторить неудавшиеся" in r.warnings[0]
 
@@ -282,3 +283,49 @@ def test_book_report_is_built_for_books_written_before_checks_existed(db, sid, s
     assert w.book_report(pid) is not None and svc._row(pid)["qa_json"] != "{}"
     svc2, w2, _, pid2 = setup(db, sid, settings, model, words=500)
     assert w2.book_report(pid2) is None                # текстов нет — проверять нечего
+
+
+def _sentences(tag: str, n: int = 120) -> str:
+    return " ".join(f"Вера Лунина {tag} сделала шаг номер {k} по отсеку." for k in range(n))
+
+
+def test_fix_book_rewrites_flagged_chapter_with_findings_as_feedback(db, sid, settings, model):
+    prompts = []
+
+    def write(prompt, default):
+        prompts.append(prompt)
+        return _sentences("после исправления")
+
+    svc, w, llm, pid = setup(db, sid, settings, model, extra={"write_handler": write}, words=500)
+    w.write(pid, model)
+    w.update_text(pid, 1, _sentences("до") + " «Незакрытая цитата.")
+    assert any(f.code == "quotes" and f.chapter == 1 for f in w.check_book(pid).findings)
+    prompts.clear()
+    s = w.fix_book(pid, model, rounds=1, chapters=[1])
+    assert s.fixed == [1] and len(prompts) == 1 and "кавычки" in prompts[0]
+    assert "после исправления" in w.chapter_text(pid, 1)
+    assert not any(f.code == "quotes" for f in w.book_report(pid).findings)
+
+
+def test_fix_book_keeps_old_text_when_rewrite_is_worse(db, sid, settings, model):
+    def write(prompt, default):
+        return "Вера Лунина шла по отсеку. 你好世界。 " * 80 if "ЗАМЕЧАНИЯ" in prompt else default(prompt)
+
+    svc, w, llm, pid = setup(db, sid, settings, model, extra={"write_handler": write}, words=500)
+    w.write(pid, model, chapters=[0])
+    old = _sentences("до") + " «Незакрытая цитата."
+    w.update_text(pid, 0, old)
+    s = w.fix_book(pid, model, rounds=1, chapters=[0])
+    assert s.fixed == [] and w.chapter_text(pid, 0) == old
+
+
+def test_write_runs_fix_automatically_when_enabled(db, sid, settings, model):
+    calls = []
+
+    def write(prompt, default):
+        calls.append(prompt)
+        return _sentences("первый") + " «Незакрытая." if len(calls) == 1 else _sentences("второй")
+
+    svc, w, llm, pid = setup(db, sid, settings, model, extra={"write_handler": write}, words=500, auto_fix=True, fix_rounds=1)
+    s = w.write(pid, model, chapters=[0])
+    assert len(calls) == 2 and s.fixed == [0] and "второй" in w.chapter_text(pid, 0)

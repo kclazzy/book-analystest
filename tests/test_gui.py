@@ -326,6 +326,12 @@ def test_write_buttons_and_save_book(ctx, qapp, tmp_path, monkeypatch):
     win.check_book()
     assert "Проверка книги" in win.ad_detail.toPlainText() and "ошибок: 0" in win.ad_detail.toPlainText()
     pid = win.ad_projects.currentData()
+    bad_text = " ".join(f"Вера Лунина сделала шаг номер {k} по отсеку." for k in range(60)) + " «Незакрытая цитата."
+    ctx.writer().update_text(pid, 1, bad_text)
+    win.ad_autofix.setChecked(False)
+    win.fix_book()
+    wait(win.thread_adapt)
+    assert "Исправлены по проверке главы" in win.ad_label.text()
     ctx.writer().update_text(pid, 1, "Текст оборван на середине и")
     asked = []
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: asked.append(a[2]) or QMessageBox.No)

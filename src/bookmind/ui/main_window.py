@@ -427,6 +427,9 @@ class MainWindow(QMainWindow):
         self.ad_words.setSingleStep(100)
         self.ad_words.setValue(1200)
         form.addRow("Слов в главе (ориентир):", self.ad_words)
+        self.ad_autofix = QCheckBox("После проверки книги сразу исправлять найденное (переписывать главы с замечаниями)")
+        self.ad_autofix.setChecked(True)
+        form.addRow("", self.ad_autofix)
         lay.addLayout(form)
         row = QHBoxLayout()
         self.ad_projects = QComboBox()
@@ -444,7 +447,7 @@ class MainWindow(QMainWindow):
         lay.addLayout(row)
         row2 = QHBoxLayout()
         for key, text, fn in (("review", "Пересмотреть пустые главы", self.review_empty), ("replan", "Переделать план выбранной", self.replan_selected), ("write_sel", "Написать выбранную главу", self.write_selected), ("write_all", "Написать все главы", self.write_all),
-                              ("rewrite", "Переписать выбранную", self.rewrite_selected), ("check", "Проверить книгу", self.check_book), ("export", "Сохранить книгу…", self.book_save),
+                              ("rewrite", "Переписать выбранную", self.rewrite_selected), ("check", "Проверить книгу", self.check_book), ("fix", "Исправить по проверке", self.fix_book), ("export", "Сохранить книгу…", self.book_save),
                               ("full", "Создать книгу целиком", self.full_book)):
             b = QPushButton(text)
             b.clicked.connect(fn)
@@ -530,7 +533,7 @@ class MainWindow(QMainWindow):
         return AdaptParams(divergence=self.ad_div.currentData(), chapters=self.ad_chapters.value() or None,
                            genre=self.ad_genre.text().strip(), setting=self.ad_setting.text().strip(),
                            keep=[k for k, cb in self.ad_keep.items() if cb.isChecked()], pause_after_plan=self.ad_pause.isChecked(),
-                           chapter_words=self.ad_words.value())
+                           chapter_words=self.ad_words.value(), auto_fix=self.ad_autofix.isChecked())
 
     def review_empty(self) -> None:
         pid = self.ad_projects.currentData()
@@ -650,6 +653,7 @@ class MainWindow(QMainWindow):
         if model:
             p = self.ctx.adaptation().params(pid)
             p.chapter_words = self.ad_words.value()
+            p.auto_fix = self.ad_autofix.isChecked()
             self.ctx.adaptation()._save(pid, params_json=p.model_dump_json())
             self._start_job(WriteThread(self.ctx, model, pid, chapters, rewrite))
 
@@ -685,6 +689,14 @@ class MainWindow(QMainWindow):
         titles = {c["idx"]: c["title"] for c in self.ctx.adaptation().report(pid)["chapters"]}
         self.ad_detail.setMarkdown(rep.to_markdown(titles))
         self.log(f"Проверка книги: ошибок — {len(rep.errors)}, предупреждений — {len(rep.warnings)}")
+
+    def fix_book(self) -> None:
+        pid = self.ad_projects.currentData()
+        if not pid:
+            return
+        model = self._job_ready()
+        if model:
+            self._start_job(WriteThread(self.ctx, model, pid, None, False, fix=True))
 
     def book_save(self) -> None:
         from bookmind.creation.book_export import export_book
@@ -739,6 +751,8 @@ class MainWindow(QMainWindow):
                    "failed": f"Ошибка. {r.message}", "needs_review": f"Нужна проверка плана. {r.message}"}.get(r.status, r.status)
         else:                            # итог написания глав
             msg = {"completed": f"Написано глав: {r.written}", "paused": f"Остановлено. {r.message}", "failed": f"Ошибка. {r.message}"}.get(r.status, r.status)
+        if getattr(r, "fixed", None):
+            msg += f". Исправлены по проверке главы: {', '.join(str(i + 1) for i in r.fixed)}"
         if r.flagged:
             msg += f". Требуют внимания главы: {', '.join(str(i + 1) for i in r.flagged)}"
         for w_ in getattr(r, "warnings", []):

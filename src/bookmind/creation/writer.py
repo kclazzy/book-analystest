@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 from bookmind.creation.book_export import Book, BookChapter
@@ -38,6 +38,16 @@ class WriteSummary:
     status: str             # completed | paused | failed
     written: int
     flagged: list[int]
+    message: str = ""
+    fixed: list[int] = field(default_factory=list)      # главы, переписанные по итогам проверки книги
+
+
+@dataclass
+class FixSummary:
+    fixed: list[int]            # главы, текст которых заменён более удачным
+    rounds: int
+    errors: int                 # ошибок в отчёте после исправления
+    warnings: int
     message: str = ""
 
 
@@ -150,7 +160,77 @@ class BookWriter:
         self.svc._save(pid, status="completed", stage="written" if not left else "writing")
         if written:
             self.check_book(pid)
-        return self._summary(pid, "completed", written, "")
+        summary = self._summary(pid, "completed", written, "")
+        if written and params.auto_fix and not cancel.is_set():
+            fx = self.fix_book(pid, model, on_progress=on_progress, cancel=cancel, chapters=chapters if chapters is not None else None)
+            summary = self._summary(pid, "completed", written, fx.message)
+            summary.fixed = fx.fixed
+        return summary
+
+    # ---------- исправление по итогам проверки ----------
+    @staticmethod
+    def _fix_targets(rep: qa.BookReport, only: set[int] | None) -> dict[int, list[str]]:
+        t: dict[int, list[str]] = {}
+        for f in rep.findings:
+            if f.code in ("missing_text", "cast_absent"):
+                continue                                    # эти замечания правятся написанием глав / планом, а не переписыванием
+            chs = [f.chapter] if f.chapter is not None else f.related[1:]   # из повторяющихся глав первая остаётся как есть
+            for c in chs:
+                if only is None or c in only:
+                    t.setdefault(c, []).append(f.message)
+        return t
+
+    def _chapter_findings(self, pid: str, idx: int, text: str, plans, params) -> int:
+        cast = self.svc.cast(pid) or qa.Cast(members=[])
+        found = qa.check_chapter(text, plans.get(idx), cast, params.chapter_words)
+        return sum(10 if f.severity == "error" else 1 for f in found)
+
+    def fix_book(self, pid: str, model: str, rounds: int | None = None, chapters: list[int] | None = None,
+                 on_progress: ProgressCb | None = None, cancel: threading.Event | None = None) -> FixSummary:
+        """Проверяет книгу и переписывает главы с замечаниями, передавая замечания модели. Новый текст принимается,
+        только если в нём замечаний не больше, чем было; иначе остаётся прежний."""
+        cancel = cancel or threading.Event()
+        params, plans = self.svc.params(pid), self.svc.plans(pid)
+        rounds = params.fix_rounds if rounds is None else rounds
+        only = set(chapters) if chapters is not None else None
+        fixed: set[int] = set()
+        done = 0
+        msg = ""
+        try:
+            for done in range(1, rounds + 1):
+                rep = self.check_book(pid)
+                targets = self._fix_targets(rep, only)
+                if not targets:
+                    done -= 1
+                    break
+                progress = False
+                for idx, msgs in sorted(targets.items()):
+                    if cancel.is_set():
+                        raise CancelledError("Остановлено пользователем")
+                    old = self._rows(pid)[idx]
+                    old_score = self._chapter_findings(pid, idx, old["text"], plans, params)
+                    self.db.execute("UPDATE adaptation_chapters SET text='', text_status='none', text_parts=0, text_attempts=0, text_check_json='{}' "
+                                    "WHERE project_id=? AND idx=?", (pid, idx))
+                    self._write_chapter(pid, idx, model, params, plans, len(plans), on_progress, cancel,
+                                        feedback=["исправь в главе: " + m for m in msgs])
+                    new = self._rows(pid)[idx]
+                    if self._chapter_findings(pid, idx, new["text"], plans, params) <= old_score and new["text"].strip():
+                        fixed.add(idx)
+                        progress = True
+                    else:
+                        self.db.execute("UPDATE adaptation_chapters SET text=?, text_status=?, text_parts=?, text_attempts=?, text_check_json=? "
+                                        "WHERE project_id=? AND idx=?", (old["text"], old["text_status"], old["text_parts"], old["text_attempts"],
+                                                                         old["text_check_json"], pid, idx))
+                if not progress:
+                    break
+        except CancelledError:
+            msg = "Исправление остановлено; написанное сохранено"
+        except OllamaUnavailableError as exc:
+            msg = f"Исправление прервано: Ollama недоступен: {exc}"
+        except TRANSIENT as exc:
+            msg = f"Исправление прервано: модель не вернула текст: {exc}"
+        rep = self.check_book(pid)
+        return FixSummary(sorted(fixed), done, len(rep.errors), len(rep.warnings), msg)
 
     # ---------- проверка книги ----------
     def check_book(self, pid: str) -> qa.BookReport:
@@ -178,7 +258,7 @@ class BookWriter:
     def _parts_for(self, words: int) -> int:
         return max(1, round(words / WORDS_PER_PART))
 
-    def _write_chapter(self, pid, idx, model, params, plans, total, on_progress, cancel) -> None:
+    def _write_chapter(self, pid, idx, model, params, plans, total, on_progress, cancel, feedback: list[str] | None = None) -> None:
         row = self._rows(pid).get(idx, {})
         parts = self._parts_for(params.chapter_words)
         words_part = max(120, params.chapter_words // parts)
@@ -187,7 +267,7 @@ class BookWriter:
             text, done = row.get("text", ""), row.get("text_parts", 0)
         else:
             text, done = "", 0
-        fb: list[str] = []
+        fb: list[str] = list(feedback or [])
         max_attempts = max(1, params.max_replans + 1)
         while True:
             if done == 0:

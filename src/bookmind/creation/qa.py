@@ -37,6 +37,7 @@ class Finding:
     code: str
     message: str
     chapter: int | None = None       # с 0; None — вся книга
+    related: list[int] = field(default_factory=list)   # для повторов между главами: все затронутые главы (с 0)
 
 
 @dataclass
@@ -190,7 +191,8 @@ def check_book(texts: dict[int, str], plans: dict[int, ChapterPlan], cast: Cast,
     for k, chs in seen.items():
         if len(chs) >= 2:
             rep.findings.append(Finding("warning", "cross_duplicate",
-                                        f"одно и то же предложение повторяется в главах {', '.join(str(c + 1) for c in sorted(chs))}: «{sample[k][:70]}…»"))
+                                        f"одно и то же предложение повторяется в главах {', '.join(str(c + 1) for c in sorted(chs))}: «{sample[k][:70]}…»",
+                                        related=sorted(chs)))
 
     grams: dict[str, set[int]] = defaultdict(set)
     for i, t in present.items():
@@ -199,13 +201,13 @@ def check_book(texts: dict[int, str], plans: dict[int, ChapterPlan], cast: Cast,
     need = max(PHRASE_MIN_CHAPTERS, int(len(present) * PHRASE_MIN_SHARE + 0.999))
     rec = sorted(((len(c), g) for g, c in grams.items() if len(c) >= need), reverse=True)[:3]
     for n, g in rec:
-        rep.findings.append(Finding("warning", "phrase_recurrence", f"оборот «{g}» встречается в {n} главах: возможно, модель повторяется"))
+        rep.findings.append(Finding("warning", "phrase_recurrence", f"оборот «{g}» встречается в {n} главах: возможно, модель повторяется", related=sorted(grams[g])))
 
     starts = defaultdict(list)
     for i, t in present.items():
         starts[" ".join(x.casefold() for x in _WORD.findall(t)[:4])].append(i)
     for s, chs in starts.items():
         if len(chs) >= 3:
-            rep.findings.append(Finding("warning", "same_start", f"главы {', '.join(str(c + 1) for c in sorted(chs))} начинаются одинаково: «{s}»"))
+            rep.findings.append(Finding("warning", "same_start", f"главы {', '.join(str(c + 1) for c in sorted(chs))} начинаются одинаково: «{s}»", related=sorted(chs)))
     rep.findings.sort(key=lambda f: (f.chapter is None, f.chapter or 0, f.severity != "error"))
     return rep
