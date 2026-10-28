@@ -96,3 +96,75 @@ def test_markdown_report_lists_chapters_and_summary():
     assert "ошибок: " in md and rep.as_dict()["errors"] >= 1
     clean = qa.check_book({0: GOOD}, {0: PLAN}, Cast(members=[CAST.members[0], CAST.members[1]]), n_chapters=1)
     assert clean.findings == [] and "Замечаний нет" in clean.to_markdown({0: "Отсек 1"})
+
+
+# ---------- замечания, найденные на реальной книге ----------
+LONG = "Вера Лунина медленно шла по тёмному коридору шлюза и считала шаги до выхода."
+
+
+@pytest.mark.parametrize("text,code", [
+    (GOOD + " " + LONG + " Осип Градов молчал. " + LONG, "dup_sentence"),
+    (GOOD + " Она увидела tunnel впереди.", "latin"),
+    (GOOD + " Она почувствовала инстинkтивный страх.", "latin"),
+    ("Место действия: шлюз\nТочка зрения: Вера\n\n" + GOOD, "service_header"),
+    (GOOD + " Последний кадр: Вера уходит в темноту.", "meta"),
+    (GOOD.rstrip(".") + ". Вместе они начали новую эру, и впереди их ждало светлое будущее.", "cliche_ending"),
+])
+def test_new_chapter_problems_are_detected(text, code):
+    assert code in codes(qa.check_chapter(text, PLAN, CAST, target_words=30))
+
+
+def test_near_duplicate_sentence_is_found_and_dialogue_is_not_confused():
+    a = "Вера Лунина медленно шла по тёмному коридору шлюза и считала шаги до самого выхода."
+    b = "Вера Лунина медленно шла по тёмному коридору шлюза и считала шаги до самого выхода!"
+    assert "dup_sentence" in codes(qa.check_chapter(GOOD + " " + a + " Тишина. " + b, PLAN, CAST, 30))
+    assert "dup_sentence" not in codes(qa.check_chapter(GOOD, PLAN, CAST, 30))
+
+
+def test_latin_names_from_cast_are_allowed():
+    cast = Cast(members=[CastMember(role="Союзник", name="Tik")])
+    assert "latin" not in codes(qa.check_chapter(GOOD + " Tik кивнул.", PLAN, cast, 30))
+
+
+def test_dedupe_text_removes_repeated_sentences_and_paragraphs_keeps_first():
+    p = "Вера Лунина медленно шла по тёмному коридору шлюза и считала шаги до выхода."
+    t = f"{p} Осип молчал.\n\n{GOOD}\n\n{p} Осип молчал.\n\n{GOOD}"
+    out = qa.dedupe_text(t)
+    assert out.count("медленно шла") == 1 and out.count("прозвучал чужой голос") == 1 and "Осип молчал" in out
+    assert qa.dedupe_text(GOOD) == GOOD
+
+
+def test_strip_service_lines():
+    assert qa.strip_service_lines("Место действия: шлюз\nТекст сцены.\nКадр 3: финал\nДальше.") == "Текст сцены.\nДальше."
+
+
+def book_texts(n=6, end=None):
+    return {i: f"Глава про шлюз номер {i}. " + GOOD + (end or "") for i in range(n)}
+
+
+def test_first_person_chapters_are_flagged_only_when_book_is_third_person():
+    fp = "Я вошёл в шлюз. Мне было страшно, и я не знал, что меня ждёт. Мы с Осипом пошли дальше, и нас никто не видел."
+    t = book_texts()
+    t[2] = fp + " " + GOOD
+    rep = qa.check_book(t, {}, CAST, 6)
+    assert [f.chapter for f in rep.findings if f.code == "first_person"] == [2]
+    t_all = {i: fp + f" Номер {i}. " + GOOD for i in range(6)}
+    assert not [f for f in qa.check_book(t_all, {}, CAST, 6).findings if f.code == "first_person"]
+
+
+def test_dialogue_with_i_does_not_count_as_first_person():
+    t = book_texts()
+    t[1] = GOOD + ' — Я знаю, мне страшно, мы не успеем, — сказал Осип. «Я здесь, — подумала она, — мы справимся».'
+    assert not [f for f in qa.check_book(t, {}, CAST, 6).findings if f.code == "first_person"]
+
+
+def test_overused_word_is_reported_for_the_book():
+    t = {i: f"Номер {i}. " + GOOD + " Резонанс дрожал, резонанс нарастал, и резонанс гудел в стенах. Резонанс слышали все. " * 2 for i in range(8)}
+    f = [x for x in qa.check_book(t, {}, CAST, 8).findings if x.code == "word_overuse"]
+    assert f and "резонанс" in f[0].message.casefold() and f[0].related and f[0].severity == "warning"
+
+
+def test_cliche_endings_pattern_is_reported_once_for_book():
+    end = " Вместе они начали новую эру, и впереди их ждало будущее."
+    rep = qa.check_book(book_texts(6, end), {}, CAST, 6)
+    assert [f.chapter for f in rep.findings if f.code == "cliche_ending"] == [None]

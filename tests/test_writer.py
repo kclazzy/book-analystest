@@ -341,3 +341,43 @@ def test_book_gets_author_cover_and_illustrations_from_params(db, sid, settings,
     w2.write(pid2, model, chapters=[0])
     b2 = w2.book(pid2)
     assert b2.author == "BookMind" and b2.cover is None and b2.chapters[0].image is None
+
+
+def test_clean_prose_drops_service_lines_and_repeated_sentences():
+    p = "Вера Лунина медленно шла по тёмному коридору шлюза и считала шаги до выхода."
+    out = clean_prose(f"Место действия: шлюз\nКадр 2: финал\n{p} Осип молчал.\n\n{p} Осип молчал.")
+    assert out.count("медленно шла") == 1 and "Место действия" not in out and "Кадр" not in out
+
+
+def test_prompt_forbids_known_generation_defects(db, sid, settings, model):
+    prompts = []
+
+    def write(prompt, default):
+        prompts.append(prompt)
+        return default(prompt)
+
+    svc, w, llm, pid = setup(db, sid, settings, model, extra={"write_handler": write}, words=500)
+    w.write(pid, model, chapters=[0])
+    p = prompts[0].casefold()
+    for rule in ("третьего лица", "латин", "штамп", "не повторяй", "слово «кадр»"):
+        assert rule in p
+
+
+def test_fix_book_cleans_repeats_before_asking_model(db, sid, settings, model):
+    calls = []
+
+    def write(prompt, default):
+        calls.append(prompt)
+        return _sentences("исходный")
+
+    svc, w, llm, pid = setup(db, sid, settings, model, extra={"write_handler": write}, words=500)
+    w.write(pid, model, chapters=[0])
+    dup = "Вера Лунина медленно шла по тёмному коридору шлюза и считала шаги до выхода."
+    w.update_text(pid, 0, _sentences("x") + f" {dup} Конец сцены.\n\nМежду тем.\n\n{dup} Конец сцены.")
+    assert any(f.code == "dup_sentence" for f in w.check_book(pid).findings)
+    calls.clear()
+    s = w.fix_book(pid, model, rounds=1, chapters=[0])
+    # модель могла быть вызвана из-за других замечаний (охват плана), но про повторы ей писать уже не нужно
+    assert 0 in s.fixed and all("повторяются предложения" not in c for c in calls)
+    assert w.chapter_text(pid, 0).count("медленно шла") <= 1
+    assert not any(f.code == "dup_sentence" for f in w.book_report(pid).findings)

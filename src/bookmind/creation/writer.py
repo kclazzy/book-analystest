@@ -69,7 +69,8 @@ def clean_prose(text: str) -> str:
         s = re.sub(r"\*\*(.+?)\*\*", r"\1", s)
         s = re.sub(r"(?<!\w)\*(.+?)\*(?!\w)", r"\1", s)
         out.append(s)
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+    cleaned = re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+    return qa.dedupe_text(qa.strip_service_lines(cleaned))
 
 
 def count_words(text: str) -> int:
@@ -193,6 +194,18 @@ class BookWriter:
         found = qa.check_chapter(text, plans.get(idx), cast, params.chapter_words)
         return sum(10 if f.severity == "error" else 1 for f in found)
 
+    def _autoclean(self, pid: str, chapters: set[int]) -> set[int]:
+        """Убирает из глав повторяющиеся предложения и служебные строки. Возвращает главы, текст которых изменился."""
+        changed: set[int] = set()
+        rows = self._rows(pid)
+        for idx in sorted(chapters):
+            old = rows.get(idx, {}).get("text") or ""
+            new = qa.dedupe_text(qa.strip_service_lines(old)) if old.strip() else old
+            if new.strip() and new != old.strip():
+                self.db.execute("UPDATE adaptation_chapters SET text=? WHERE project_id=? AND idx=?", (new, pid, idx))
+                changed.add(idx)
+        return changed
+
     def fix_book(self, pid: str, model: str, rounds: int | None = None, chapters: list[int] | None = None,
                  on_progress: ProgressCb | None = None, cancel: threading.Event | None = None) -> FixSummary:
         """Проверяет книгу и переписывает главы с замечаниями, передавая замечания модели. Новый текст принимается,
@@ -208,6 +221,10 @@ class BookWriter:
             for done in range(1, rounds + 1):
                 rep = self.check_book(pid)
                 targets = self._fix_targets(rep, only)
+                cleaned = self._autoclean(pid, set(targets))
+                if cleaned:                                 # повторы и служебные строки убираем без модели
+                    fixed |= cleaned
+                    targets = self._fix_targets(self.check_book(pid), only)
                 if not targets:
                     done -= 1
                     break
@@ -307,11 +324,11 @@ class BookWriter:
     def _write_part(self, pid, idx, part, parts, words, text_so_far, model, plans, feedback) -> str:
         pr, cast, plan = self.svc.premise(pid), self.svc.cast(pid), plans[idx]
         if parts == 1:
-            task = "Напиши всю главу целиком: начни со сцены, развей конфликт и закончи итогом и последним кадром."
+            task = "Напиши всю главу целиком: начни со сцены, развей конфликт и закончи итогом, который вытекает из сцены."
         elif part == 0:
             task = "Начало главы: введи место, точку зрения и цель героя, затяни конфликт. Главу не заканчивай."
         elif part == parts - 1:
-            task = "Финал главы: доведи конфликт до итога и закончи последним кадром главы."
+            task = "Финал главы: доведи конфликт до итога и закончи главу образом или действием, без вывода и морали."
         else:
             task = "Середина главы: развивай конфликт, добавь препятствия, диалоги и подсказки. Главу не заканчивай."
         fb = ("ЗАМЕЧАНИЯ К ПРЕДЫДУЩЕЙ ПОПЫТКЕ (учти их):\n" + "\n".join(f"- {i}" for i in feedback) + "\n") if feedback else ""

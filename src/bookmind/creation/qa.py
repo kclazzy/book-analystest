@@ -14,7 +14,14 @@ from bookmind.services.search import STOPWORDS, stem
 
 _WORD = re.compile(r"\w+", re.UNICODE)
 _FOREIGN = re.compile(r"[぀-ヿ㐀-䶿一-鿿가-힯؀-ۿ฀-๿]")
-_META_ANY = re.compile(r"как (?:языковая модель|ии\b|искусственный интеллект)|as an ai|language model|надеюсь, (?:эта|этот|вам|что)", re.IGNORECASE)
+_META_ANY = re.compile(r"как (?:языковая модель|ии\b|искусственный интеллект)|as an ai|language model|надеюсь, (?:эта|этот|вам|что)"
+                       r"|(?:последн\w+|финальн\w+|заключительн\w+)\s+кадр", re.IGNORECASE)
+_LATIN = re.compile(r"(?=\w*[А-Яа-яЁё])(?=\w*[A-Za-z])\w+|\b[A-Za-z]{3,}\b")
+_SERVICE = re.compile(r"^\s*[*_#\s]*(?:место действия|точка зрения|время действия|цель героя|конфликт|итог|кадр\s*\d*|сцена\s*\d*|локация|пов)\s*[:—–]", re.IGNORECASE)
+_FIRST = re.compile(r"\b(?:я|мне|меня|мной|мы|нас|нам|нами|мой|моя|моё|мои)\b", re.IGNORECASE)
+_CLICHE = re.compile(r"вместе они|новую? (?:эр[уы]|жизн|глав)|начало нового|всё только начинается|впереди (?:их |его |её )?ждал|"
+                     r"светл\w+ будущ|ничто не (?:могло )?остановит|гармони[июя]|навсегда изменил|надежд\w+ на (?:лучшее|будущее)|"
+                     r"солнце (?:вставало|восходило)|рассвет нового", re.IGNORECASE)
 _META_START = re.compile(r"^\s*(?:конечно|хорошо|разумеется|вот)[,!:.]\s", re.IGNORECASE)
 _NAME = re.compile(r"(?<![\w])[А-ЯЁ][а-яё]{3,}")
 _END_OK = ".!?…»\"”)]*"
@@ -29,6 +36,18 @@ PHRASE_MIN_CHAPTERS = 4
 PHRASE_MIN_SHARE = 0.4
 UNEVEN_LOW, UNEVEN_HIGH = 0.5, 2.0
 DUP_SENTENCE_MIN_CHARS = 60
+INNER_DUP_MIN_CHARS = 40     # повтор предложения внутри одной главы
+INNER_DUP_JACCARD = 0.85     # почти одинаковые предложения
+FIRST_PERSON_MIN = 3         # сколько местоимений первого лица вне диалогов делает главу «от первого лица»
+FIRST_PERSON_MAX_SHARE = 0.5 # если от первого лица больше половины глав, это стиль книги, а не ошибка
+CLICHE_BOOK_SHARE = 0.4      # если столько глав кончаются штампом, замечание одно на всю книгу
+OVERUSE_PER_1000 = 2.5       # слово чаще, чем столько раз на 1000 слов
+OVERUSE_MIN_SHARE = 0.4      # и встречается минимум в такой доле глав
+OVERUSE_TOP = 3
+OVERUSE_MIN_COUNT = 8
+COMMON_WORDS = {"вокруг", "только", "теперь", "словно", "будто", "потом", "между", "через", "всегда", "иногда", "внутри", "снова"}
+OVERUSE_MIN_CHAPTERS = 4     # в совсем короткой книге слова-паразиты не ищем
+OVERUSE_CHAPTERS = 8         # сколько самых «насыщенных» глав передавать на исправление
 
 
 @dataclass
@@ -93,6 +112,60 @@ def _norm(s: str) -> str:
     return " ".join(w.casefold().replace("ё", "е") for w in _WORD.findall(s))
 
 
+def _inner_duplicates(text: str) -> list[str]:
+    """Предложения, которые в главе встречаются дважды и больше (дословно или почти дословно)."""
+    seen: list[tuple[str, set[str]]] = []
+    dups: list[str] = []
+    for sent in _sentences(text):
+        if len(sent) < INNER_DUP_MIN_CHARS:
+            continue
+        k = _norm(sent)
+        ws = set(k.split())
+        if any(k == o or len(ws & w) / max(1, len(ws | w)) >= INNER_DUP_JACCARD for o, w in seen):
+            dups.append(sent)
+        else:
+            seen.append((k, ws))
+    return dups
+
+
+def dedupe_text(text: str) -> str:
+    """Убирает повторы внутри главы: абзацы и предложения, которые уже были выше (остаётся первое вхождение)."""
+    paras_out: list[str] = []
+    seen_p: set[str] = set()
+    seen_s: list[tuple[str, set[str]]] = []
+    for para in re.split(r"\n\s*\n", text.strip()):
+        kp = _norm(para)
+        if not kp or (len(para) >= INNER_DUP_MIN_CHARS and kp in seen_p):
+            continue
+        seen_p.add(kp)
+        kept = []
+        for sent in _sentences(para):
+            k = _norm(sent)
+            ws = set(k.split())
+            if len(sent) >= INNER_DUP_MIN_CHARS and any(k == o or len(ws & w) / max(1, len(ws | w)) >= INNER_DUP_JACCARD for o, w in seen_s):
+                continue
+            seen_s.append((k, ws))
+            kept.append(sent)
+        if kept:
+            paras_out.append(" ".join(kept) if len(kept) != len(_sentences(para)) else para.strip())
+    return "\n\n".join(paras_out)
+
+
+def strip_service_lines(text: str) -> str:
+    """Убирает строки-заголовки вида «Место действия: …», «Кадр 3: …»."""
+    return "\n".join(line for line in text.split("\n") if not _SERVICE.match(line))
+
+
+def _narration(text: str) -> str:
+    """Текст без прямой речи: «ёлочки» и всё от тире-реплики до конца абзаца."""
+    t = re.sub(r"«[^»]*»", " ", text)
+    return "\n\n".join(re.sub(r"(?:(?<=[.!?…:])|^)\s*[—–].*$", " ", para, flags=re.S) for para in re.split(r"\n\s*\n|\n", t))
+
+
+def _first_person(text: str) -> int:
+    return len(_FIRST.findall(_narration(text)))
+
+
 def check_chapter(text: str, plan: ChapterPlan | None, cast: Cast, target_words: int | None = None) -> list[Finding]:
     """Проверки одной главы. Ошибки генерации — error, расхождения с планом — warning."""
     out: list[Finding] = []
@@ -111,6 +184,22 @@ def check_chapter(text: str, plan: ChapterPlan | None, cast: Cast, target_words:
     loops = [s for s, n in counts.items() if n >= LOOP_REPEATS]
     if loops:
         add("error", "loop", f"зацикливание: одно предложение повторено {counts[loops[0]]} раза(ов): «{loops[0][:60]}…»")
+    inner = _inner_duplicates(text)
+    if inner:
+        add("warning", "dup_sentence", f"в главе повторяются предложения ({len(inner)}): «{inner[0][:60]}…»")
+    if any(_SERVICE.match(line) for line in text.split("\n")):
+        add("error", "service_header", "в тексте служебные строки («Место действия:», «Кадр 1:» и т. п.)")
+    allowed = set()
+    for m in cast.members:
+        allowed |= {w.casefold() for w in _WORD.findall(m.name)}
+    if plan is not None:
+        allowed |= {w.casefold() for w in _WORD.findall(f"{plan.pov} {plan.location} {' '.join(plan.characters)}")}
+    lat = sorted({w for w in (m.group() for m in _LATIN.finditer(text)) if w.casefold() not in allowed})
+    if lat:
+        add("error", "latin", "латинские буквы в русском тексте: " + ", ".join(lat[:5]))
+    last = _sentences(text)[-1:] or [""]
+    if _CLICHE.search(last[0]):
+        add("warning", "cliche_ending", f"штампованная концовка главы: «{last[0][:70]}»")
     if text.count("«") != text.count("»"):
         add("warning", "quotes", "не сходятся кавычки «»")
     words = len(_WORD.findall(text))
@@ -209,5 +298,40 @@ def check_book(texts: dict[int, str], plans: dict[int, ChapterPlan], cast: Cast,
     for s, chs in starts.items():
         if len(chs) >= 3:
             rep.findings.append(Finding("warning", "same_start", f"главы {', '.join(str(c + 1) for c in sorted(chs))} начинаются одинаково: «{s}»", related=sorted(chs)))
+    _book_style_checks(rep, present)
     rep.findings.sort(key=lambda f: (f.chapter is None, f.chapter or 0, f.severity != "error"))
     return rep
+
+
+def _book_style_checks(rep: BookReport, present: dict[int, str]) -> None:
+    """Проверки, где важно сравнение глав: лицо повествования, штампы в концовках, слова-паразиты."""
+    if not present:
+        return
+    fp = sorted(i for i, t in present.items() if _first_person(t) >= FIRST_PERSON_MIN)
+    if fp and len(fp) / len(present) <= FIRST_PERSON_MAX_SHARE:
+        for i in fp:
+            rep.findings.append(Finding("warning", "first_person", "рассказ ведётся от первого лица («я», «мы»), хотя книга написана от третьего", i))
+    cl = sorted(f.chapter for f in rep.findings if f.code == "cliche_ending" and f.chapter is not None)
+    if cl and len(cl) / len(present) >= CLICHE_BOOK_SHARE:
+        rep.findings[:] = [f for f in rep.findings if f.code != "cliche_ending"]
+        rep.findings.append(Finding("warning", "cliche_ending",
+                                    f"{len(cl)} глав из {len(present)} заканчиваются похожим штампом («вместе», «новая эра», «будущее»): главы {', '.join(str(c + 1) for c in cl[:12])}",
+                                    related=cl))
+    total = sum(len(_WORD.findall(t)) for t in present.values())
+    per_ch: dict[str, Counter[int]] = defaultdict(Counter)
+    shown: dict[str, str] = {}
+    for i, t in present.items():
+        for w in _WORD.findall(t):
+            if len(w) >= 6 and w.casefold() not in STOPWORDS and w.casefold() not in COMMON_WORDS and not w[0].isupper() and not w.isdigit():
+                st = stem(w)
+                per_ch[st][i] += 1
+                shown.setdefault(st, w.casefold())
+    over = []
+    for st, c in per_ch.items():
+        n = sum(c.values())
+        if total and len(present) >= OVERUSE_MIN_CHAPTERS and n >= OVERUSE_MIN_COUNT and n * 1000 / total >= OVERUSE_PER_1000 and len(c) / len(present) >= OVERUSE_MIN_SHARE:
+            over.append((n, st))
+    for n, st in sorted(over, reverse=True)[:OVERUSE_TOP]:
+        chs = [i for i, _ in per_ch[st].most_common(OVERUSE_CHAPTERS)]
+        rep.findings.append(Finding("warning", "word_overuse", f"слово «{shown[st]}» (и однокоренные) встречается {n} раз — {n * 1000 // total} на 1000 слов",
+                                    related=sorted(chs)))
