@@ -754,6 +754,13 @@ class MainWindow(QMainWindow):
         if pid:
             self.ad_projects.setCurrentIndex(max(self.ad_projects.findData(pid), 0))
         self.adapt_refresh()
+        rep = self.ctx.writer().book_report(pid) if pid and r.status != "failed" else None
+        if rep:
+            titles = {c["idx"]: c["title"] for c in self.ctx.adaptation().report(pid)["chapters"]}
+            self.ad_detail.setMarkdown(rep.to_markdown(titles))
+            note = f"Проверка книги: ошибок {len(rep.errors)}, предупреждений {len(rep.warnings)}"
+            msg += f". {note} (кнопка «Проверить книгу»)"
+            self.log(note)
         self.ad_label.setText(msg)
 
     def adapt_bible(self) -> None:

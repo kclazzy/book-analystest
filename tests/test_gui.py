@@ -322,6 +322,7 @@ def test_write_buttons_and_save_book(ctx, qapp, tmp_path, monkeypatch):
     win.write_all()
     wait(win.thread_adapt)
     assert all(win.ad_table.item(r, 5).text().startswith("готов") for r in range(8))
+    assert "Проверка книги" in win.ad_detail.toPlainText() and "Проверка книги: ошибок 0" in win.ad_label.text()   # отчёт показан сам
     win.check_book()
     assert "Проверка книги" in win.ad_detail.toPlainText() and "ошибок: 0" in win.ad_detail.toPlainText()
     pid = win.ad_projects.currentData()

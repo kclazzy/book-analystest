@@ -271,3 +271,14 @@ def test_foreign_script_triggers_rewrite(db, sid, settings, model):
     svc, w, llm, pid = setup(db, sid, settings, model, extra={"write_handler": write}, words=500)
     w.write(pid, model, chapters=[0])
     assert len(calls) >= 2 and any("иероглиф" in c or "другого письма" in c for c in calls[1:])
+
+
+def test_book_report_is_built_for_books_written_before_checks_existed(db, sid, settings, model):
+    svc, w, llm, pid = setup(db, sid, settings, model, words=500)
+    w.write(pid, model)
+    svc._save(pid, qa_json="{}")                       # книга создана старой версией: отчёта нет
+    rep = w.book_report(pid)
+    assert rep is not None and rep.chapters_checked == 8
+    assert w.book_report(pid) is not None and svc._row(pid)["qa_json"] != "{}"
+    svc2, w2, _, pid2 = setup(db, sid, settings, model, words=500)
+    assert w2.book_report(pid2) is None                # текстов нет — проверять нечего

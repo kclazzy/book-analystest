@@ -164,7 +164,11 @@ class BookWriter:
 
     def book_report(self, pid: str) -> qa.BookReport | None:
         d = json.loads(self.svc._row(pid)["qa_json"] or "{}")
-        return qa.BookReport.from_dict(d) if d else None
+        if d:
+            return qa.BookReport.from_dict(d)
+        if any(st in ("ok", "flagged") for st in self.text_status(pid).values()):
+            return self.check_book(pid)             # книга написана до появления проверки
+        return None
 
     def _summary(self, pid: str, status: str, written: int, msg: str) -> WriteSummary:
         flagged = sorted(i for i, r in self._rows(pid).items() if r["text_status"] == "flagged")
